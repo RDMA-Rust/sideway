@@ -1,0 +1,13 @@
+[package]
+name = "sideway"
+version = "0.1.0"
+authors = [
+    "Luke Yue <lukedyue@gmail.com>",
+]
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+rdma-mummy-sys = { git = "https://github.com/RDMA-Rust/rdma-mummy-sys.git", branch = "dev/sideway" }
+tabled = "0.16"
