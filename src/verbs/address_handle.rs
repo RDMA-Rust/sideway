@@ -1,8 +1,5 @@
 use rdma_mummy_sys::ibv_gid;
-use std::{
-    fmt,
-    net::Ipv6Addr,
-};
+use std::{fmt, net::Ipv6Addr};
 
 #[derive(Default, Clone, Copy, Debug)]
 pub struct Gid {

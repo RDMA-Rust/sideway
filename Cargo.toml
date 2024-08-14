@@ -11,3 +11,5 @@ edition = "2021"
 [dependencies]
 rdma-mummy-sys = { git = "https://github.com/RDMA-Rust/rdma-mummy-sys.git", branch = "dev/sideway" }
 tabled = "0.16"
+libc = "0.2"
+os_socketaddr = "0.2"

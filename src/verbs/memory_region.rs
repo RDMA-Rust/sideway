@@ -9,7 +9,7 @@ use std::{
 pub struct Buffer {
     pub data: NonNull<u8>,
     pub len: usize,
-    _layout: Layout,
+    layout: Layout,
 }
 
 impl Buffer {
@@ -23,7 +23,7 @@ impl Buffer {
                 NonNull::new(raw_ptr).unwrap_or_else(|| handle_alloc_error(layout))
             },
         };
-        Self { data, len, _layout: layout }
+        Self { data, len, layout }
     }
 }
 
@@ -36,16 +36,17 @@ impl Drop for MemoryRegion {
     fn drop(&mut self) {
         unsafe {
             ibv_dereg_mr(self.mr_ptr);
+            std::alloc::dealloc(self.buf.data.as_ptr(), self.buf.layout);
         }
     }
 }
 
 impl MemoryRegion {
-    pub fn get_lkey(&self) -> u32 {
+    pub fn lkey(&self) -> u32 {
         unsafe { (*self.mr_ptr).lkey }
     }
 
-    pub fn get_rkey(&self) -> u32 {
+    pub fn rkey(&self) -> u32 {
         unsafe { (*self.mr_ptr).rkey }
     }
 }
