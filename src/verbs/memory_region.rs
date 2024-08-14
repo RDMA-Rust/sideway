@@ -10,7 +10,7 @@ use std::{
 pub struct Buffer {
     pub data: NonNull<u8>,
     pub len: usize,
-    _layout: Layout,
+    layout: Layout,
 }
 
 impl Buffer {
@@ -24,7 +24,7 @@ impl Buffer {
                 NonNull::new(raw_ptr).unwrap_or_else(|| handle_alloc_error(layout))
             },
         };
-        Self { data, len, _layout: layout }
+        Self { data, len, layout }
     }
 }
 
