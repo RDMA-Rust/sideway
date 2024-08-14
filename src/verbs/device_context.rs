@@ -127,7 +127,9 @@ impl DeviceContext {
         unsafe {
             match ibv_query_gid(self.context, port_num, gid_index, gid.as_mut()) {
                 0 => Ok(gid),
-                ret => Err(format!("Failed to query gid_index {gid_index} on port {port_num}, returned {ret}")),
+                ret => Err(format!(
+                    "Failed to query gid_index {gid_index} on port {port_num}, returned {ret}"
+                )),
             }
         }
     }
@@ -137,7 +139,9 @@ impl DeviceContext {
         unsafe {
             match ibv_query_gid_type(self.context, port_num, gid_index, &mut gid_type) {
                 0 => Ok(gid_type),
-                ret => Err(format!("Failed to query gid_index {gid_index} on port {port_num}, returned {ret}")),
+                ret => Err(format!(
+                    "Failed to query gid_index {gid_index} on port {port_num}, returned {ret}"
+                )),
             }
         }
     }
