@@ -9,7 +9,7 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-rdma-mummy-sys = { git = "https://github.com/RDMA-Rust/rdma-mummy-sys.git", branch = "dev/sideway" }
+rdma-mummy-sys = { git = "https://github.com/RDMA-Rust/rdma-mummy-sys.git", branch = "fix/get_ctx" }
 tabled = "0.16"
 libc = "0.2"
 os_socketaddr = "0.2"
