@@ -93,14 +93,14 @@ impl<'ctx, 'channel> CompletionQueueBuilder<'ctx, 'channel> {
             dev_ctx,
             init_attr: ibv_cq_init_attr_ex {
                 cqe: 1024,
-                cq_context: ptr::null::<c_void>() as *mut _,
-                channel: ptr::null::<ibv_comp_channel>() as *mut _,
+                cq_context: ptr::null_mut::<c_void>(),
+                channel: ptr::null_mut::<ibv_comp_channel>(),
                 comp_vector: 0,
                 // TODO(zhp): setup default flags for CQ
                 wc_flags: 0,
                 comp_mask: 0,
                 flags: 0,
-                parent_domain: ptr::null::<ibv_pd>() as *mut _,
+                parent_domain: ptr::null_mut::<ibv_pd>(),
             },
             _phantom: PhantomData,
         }
