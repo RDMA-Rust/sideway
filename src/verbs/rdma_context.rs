@@ -85,16 +85,6 @@ impl RdmaContext {
         Ok(ProtectionDomain { pd_ptr })
     }
 
-    pub fn create_cq(&self, cqe: i32) -> Result<CompletionQueue, String> {
-        let cq_ptr = unsafe { ibv_create_cq(self.context, cqe, null_mut(), null_mut(), 0) };
-
-        if cq_ptr.is_null() {
-            return Err(format!("Create cq failed! {:?}", io::Error::last_os_error()));
-        }
-
-        Ok(CompletionQueue { cq_ptr })
-    }
-
     pub fn create_cq_ex(&self, init_attr: CqInitAttr) -> Result<CompletionQueueEx, String> {
         let cq_ptr = unsafe { ibv_create_cq_ex(self.context, init_attr.attr_ptr) };
         match cq_ptr {

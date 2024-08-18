@@ -8,7 +8,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         let pd = ctx.alloc_pd().unwrap();
         let mr = pd.reg_managed_mr(64).unwrap();
-        let cq = ctx.create_cq(32).unwrap();
 
         println!(
             "MR pointer is {:?}, lkey is {}, rkey is {}",
@@ -16,8 +15,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             mr.lkey(),
             mr.rkey()
         );
-
-        println!("CQ pointer is {:?}", cq,);
     }
 
     Ok(())

@@ -7,14 +7,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let dev = device::Device::new(device_ptr);
         let ctx = dev.open().unwrap();
 
-        let mut builder = completion_queue::ExtendedCompletionQueueBuilder::new(&ctx);
-        let cq1 = builder.setup_cqe(128).build().unwrap();
-        let cq2 = builder.setup_cqe(256).build().unwrap();
+        let mut builder = completion_queue::CompletionQueueBuilder::new(&ctx);
+        let cq = builder.setup_cqe(128).build().unwrap();
+        let cq_ex = builder.setup_cqe(256).build_ex().unwrap();
         // show that the lifetime of CQ is associated with ctx, not builder
         drop(builder);
-        println!("CQ 2 pointer is {:?}", cq2);
-        drop(cq2);
-        println!("CQ 1 pointer is {:?}", cq1);
+        println!("cq_ex pointer is {:?}", cq_ex);
+        drop(cq_ex);
+        println!("cq pointer is {:?}", cq);
     }
 
     Ok(())
