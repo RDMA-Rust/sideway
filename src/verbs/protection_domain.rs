@@ -4,13 +4,15 @@ use std::marker::PhantomData;
 use std::ptr::NonNull;
 
 use super::{
+    completion::CompletionQueue,
     device_context::DeviceContext,
     memory_region::{Buffer, MemoryRegion},
+    queue_pair::QueuePairBuilder,
 };
 
 #[derive(Debug)]
 pub struct ProtectionDomain<'ctx> {
-    pd: NonNull<ibv_pd>,
+    pub(crate) pd: NonNull<ibv_pd>,
     _dev_ctx: PhantomData<&'ctx ()>,
 }
 
@@ -31,10 +33,10 @@ impl ProtectionDomain<'_> {
         }
     }
 
-    pub fn reg_managed_mr(&mut self, size: usize) -> Result<MemoryRegion, String> {
+    pub fn reg_managed_mr(&self, size: usize) -> Result<MemoryRegion, String> {
         let buf = Buffer::from_len_zeroed(size);
 
-        let mr = unsafe { ibv_reg_mr(self.pd.as_mut(), buf.data.as_ptr() as _, buf.len, 0) };
+        let mr = unsafe { ibv_reg_mr(self.pd.as_ptr(), buf.data.as_ptr() as _, buf.len, 0) };
 
         if mr.is_null() {
             return Err(format!("{:?}", io::Error::last_os_error()));
@@ -47,5 +49,9 @@ impl ProtectionDomain<'_> {
 
     pub fn reg_user_mr(&self) -> Result<MemoryRegion, String> {
         todo!();
+    }
+
+    pub fn create_qp_builder(&self) -> QueuePairBuilder {
+        QueuePairBuilder::new(self)
     }
 }
