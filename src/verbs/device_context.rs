@@ -8,7 +8,7 @@ use rdma_mummy_sys::{
     ibv_device_attr_ex, ibv_port_attr, ibv_query_device_ex, ibv_query_gid, ibv_query_gid_type,
 };
 
-use super::{completion_queue::CompletionQueue, protection_domain::ProtectionDomain};
+use super::protection_domain::ProtectionDomain;
 
 pub struct DeviceContext {
     pub(crate) context: *mut ibv_context,

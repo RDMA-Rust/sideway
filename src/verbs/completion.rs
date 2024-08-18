@@ -3,20 +3,47 @@ use std::os::raw::c_void;
 use std::ptr;
 use std::ptr::NonNull;
 
-use super::comp_channel::CompletionChannel;
 use super::device_context::DeviceContext;
 use rdma_mummy_sys::{
-    ibv_comp_channel, ibv_cq, ibv_cq_ex, ibv_cq_init_attr_ex, ibv_create_cq, ibv_create_cq_ex, ibv_destroy_cq, ibv_pd,
+    ibv_comp_channel, ibv_cq, ibv_cq_ex, ibv_cq_init_attr_ex, ibv_create_comp_channel, ibv_create_cq, ibv_create_cq_ex,
+    ibv_destroy_comp_channel, ibv_destroy_cq, ibv_pd,
 };
 
 #[derive(Debug)]
-pub struct CompletionQueue<'ctx, 'channel> {
-    pub(crate) cq: NonNull<ibv_cq>,
-    // phantom data for dev_ctx & comp_channel
-    _phantom: PhantomData<(&'ctx DeviceContext, &'channel CompletionChannel<'ctx>)>,
+pub struct CompletionChannel<'res> {
+    pub(crate) channel: NonNull<ibv_comp_channel>,
+    // phantom data for device context
+    _phantom: PhantomData<&'res ()>,
 }
 
-impl Drop for CompletionQueue<'_, '_> {
+impl Drop for CompletionChannel<'_> {
+    fn drop(&mut self) {
+        let ret = unsafe { ibv_destroy_comp_channel(self.channel.as_ptr()) };
+        assert_eq!(ret, 0);
+    }
+}
+
+impl<'res> CompletionChannel<'res> {
+    pub fn new<'ctx>(dev_ctx: &'ctx DeviceContext) -> Result<CompletionChannel<'res>, String>
+    where
+        'ctx: 'res,
+    {
+        let comp_channel = unsafe { ibv_create_comp_channel(dev_ctx.context) };
+        Ok(CompletionChannel {
+            channel: NonNull::new(comp_channel).ok_or(String::from("ibv_create_comp_channel failed"))?,
+            _phantom: PhantomData,
+        })
+    }
+}
+
+#[derive(Debug)]
+pub struct CompletionQueue<'res> {
+    pub(crate) cq: NonNull<ibv_cq>,
+    // phantom data for dev_ctx & comp_channel
+    _phantom: PhantomData<&'res ()>,
+}
+
+impl Drop for CompletionQueue<'_> {
     fn drop(&mut self) {
         let ret = unsafe { ibv_destroy_cq(self.cq.as_ptr()) };
         assert_eq!(ret, 0);
@@ -24,13 +51,13 @@ impl Drop for CompletionQueue<'_, '_> {
 }
 
 #[derive(Debug)]
-pub struct CompletionQueueExtended<'ctx, 'channel> {
+pub struct CompletionQueueExtended<'res> {
     pub(crate) cq_ex: NonNull<ibv_cq_ex>,
     // phantom data for dev_ctx & comp_channel
-    _phantom: PhantomData<(&'ctx DeviceContext, &'channel CompletionChannel<'ctx>)>,
+    _phantom: PhantomData<&'res ()>,
 }
 
-impl Drop for CompletionQueueExtended<'_, '_> {
+impl Drop for CompletionQueueExtended<'_> {
     fn drop(&mut self) {
         // TODO convert cq_ex to cq (port ibv_cq_ex_to_cq in rdma-mummy-sys)
         let ret = unsafe { ibv_destroy_cq(self.cq_ex.as_ptr().cast()) };
@@ -39,14 +66,16 @@ impl Drop for CompletionQueueExtended<'_, '_> {
 }
 
 // generic builder for both cq and cq_ex
-pub struct CompletionQueueBuilder<'ctx, 'channel> {
-    dev_ctx: &'ctx DeviceContext,
+pub struct CompletionQueueBuilder<'res> {
+    dev_ctx: &'res DeviceContext,
     init_attr: ibv_cq_init_attr_ex,
-    _phantom: PhantomData<&'channel CompletionChannel<'ctx>>,
 }
 
-impl<'ctx, 'channel> CompletionQueueBuilder<'ctx, 'channel> {
-    pub fn new(dev_ctx: &'ctx DeviceContext) -> Self {
+impl<'res> CompletionQueueBuilder<'res> {
+    pub fn new<'ctx>(dev_ctx: &'ctx DeviceContext) -> Self
+    where
+        'ctx: 'res,
+    {
         // set default params for init_attr
         CompletionQueueBuilder {
             dev_ctx,
@@ -61,7 +90,6 @@ impl<'ctx, 'channel> CompletionQueueBuilder<'ctx, 'channel> {
                 flags: 0,
                 parent_domain: ptr::null_mut::<ibv_pd>(),
             },
-            _phantom: PhantomData,
         }
     }
 
@@ -75,7 +103,10 @@ impl<'ctx, 'channel> CompletionQueueBuilder<'ctx, 'channel> {
         self
     }
 
-    pub fn setup_comp_channel(&mut self, channel: &'channel CompletionChannel<'ctx>, comp_vector: u32) -> &mut Self {
+    pub fn setup_comp_channel<'channel>(&mut self, channel: &'channel CompletionChannel, comp_vector: u32) -> &mut Self
+    where
+        'channel: 'res,
+    {
         self.init_attr.channel = channel.channel.as_ptr();
         self.init_attr.comp_vector = comp_vector;
         self
@@ -83,7 +114,7 @@ impl<'ctx, 'channel> CompletionQueueBuilder<'ctx, 'channel> {
     // TODO(fuji): set various attributes
 
     // build cq_ex
-    pub fn build_ex(&self) -> Result<CompletionQueueExtended<'ctx, 'channel>, String> {
+    pub fn build_ex(&self) -> Result<CompletionQueueExtended<'res>, String> {
         // create a copy of init_attr since ibv_create_cq_ex requires a mutable pointer to it
         let mut init_attr = self.init_attr.clone();
         match unsafe { ibv_create_cq_ex(self.dev_ctx.context, &mut init_attr as *mut _) } {
@@ -97,7 +128,7 @@ impl<'ctx, 'channel> CompletionQueueBuilder<'ctx, 'channel> {
     }
 
     // build legacy cq
-    pub fn build(&self) -> Result<CompletionQueue<'ctx, 'channel>, String> {
+    pub fn build(&self) -> Result<CompletionQueue<'res>, String> {
         let cq = unsafe {
             ibv_create_cq(
                 self.dev_ctx.context,

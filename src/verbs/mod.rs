@@ -1,6 +1,5 @@
 pub mod address_handle;
-pub mod comp_channel;
-pub mod completion_queue;
+pub mod completion;
 pub mod device;
 pub mod device_context;
 pub mod memory_region;
