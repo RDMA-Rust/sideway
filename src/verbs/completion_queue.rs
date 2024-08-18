@@ -5,6 +5,7 @@ use std::{
     marker::PhantomData,
 };
 
+use super::comp_channel::CompletionChannel;
 use super::{protection_domain::ProtectionDomain, rdma_context::RdmaContext};
 use rdma_mummy_sys::{
     ibv_comp_channel, ibv_cq, ibv_cq_ex, ibv_cq_init_attr_ex, ibv_create_cq, ibv_create_cq_ex, ibv_destroy_cq, ibv_pd,
@@ -45,13 +46,13 @@ impl Drop for CqInitAttr {
 }
 
 #[derive(Debug)]
-pub struct CompletionQueue<'ctx> {
+pub struct CompletionQueue<'ctx, 'channel> {
     pub(crate) cq: ptr::NonNull<ibv_cq>,
-    // phantom data for device context
-    _dev_ctx: PhantomData<&'ctx ()>,
+    // phantom data for dev_ctx & comp_channel
+    _phantom: PhantomData<(&'ctx RdmaContext, &'channel CompletionChannel<'ctx>)>,
 }
 
-impl<'ctx> Drop for CompletionQueue<'ctx> {
+impl<'ctx, 'channel> Drop for CompletionQueue<'ctx, 'channel> {
     fn drop(&mut self) {
         let ret = unsafe { ibv_destroy_cq(self.cq.as_ptr()) };
         assert_eq!(ret, 0);
@@ -64,14 +65,13 @@ pub struct CompletionQueueEx {
 }
 
 #[derive(Debug)]
-pub struct CompletionQueueExtended<'ctx> {
+pub struct CompletionQueueExtended<'ctx, 'channel> {
     pub(crate) cq_ex: ptr::NonNull<ibv_cq_ex>,
-    // phantom data for device context
-    _dev_ctx: PhantomData<&'ctx ()>,
-    // TODO(zhp): comp_channel, lifetime
+    // phantom data for dev_ctx & comp_channel
+    _phantom: PhantomData<(&'ctx RdmaContext, &'channel CompletionChannel<'ctx>)>,
 }
 
-impl<'ctx> Drop for CompletionQueueExtended<'ctx> {
+impl<'ctx, 'channel> Drop for CompletionQueueExtended<'ctx, 'channel> {
     fn drop(&mut self) {
         // TODO convert cq_ex to cq (port ibv_cq_ex_to_cq in rdma-mummy-sys)
         let ret = unsafe { ibv_destroy_cq(self.cq_ex.as_ptr().cast()) };
@@ -80,13 +80,14 @@ impl<'ctx> Drop for CompletionQueueExtended<'ctx> {
 }
 
 // generic builder for both cq and cq_ex
-pub struct CompletionQueueBuilder<'ctx> {
+pub struct CompletionQueueBuilder<'ctx, 'channel> {
     dev_ctx: &'ctx RdmaContext,
     init_attr: ibv_cq_init_attr_ex,
+    _phantom: PhantomData<&'channel CompletionChannel<'ctx>>,
 }
 
-impl<'ctx> CompletionQueueBuilder<'ctx> {
-    pub fn new<'a>(dev_ctx: &'a RdmaContext) -> CompletionQueueBuilder<'a> {
+impl<'ctx, 'channel> CompletionQueueBuilder<'ctx, 'channel> {
+    pub fn new(dev_ctx: &'ctx RdmaContext) -> Self {
         // set default params for init_attr
         CompletionQueueBuilder {
             dev_ctx,
@@ -101,6 +102,7 @@ impl<'ctx> CompletionQueueBuilder<'ctx> {
                 flags: 0,
                 parent_domain: ptr::null::<ibv_pd>() as *mut _,
             },
+            _phantom: PhantomData,
         }
     }
 
@@ -115,24 +117,28 @@ impl<'ctx> CompletionQueueBuilder<'ctx> {
         self
     }
 
-    // TODO(zhp): setup_comp_channel (comp_channel, comp_vector)
+    pub fn setup_comp_channel(&mut self, channel: &'channel CompletionChannel<'ctx>, comp_vector: u32) -> &mut Self {
+        self.init_attr.channel = channel.channel.as_ptr();
+        self.init_attr.comp_vector = comp_vector;
+        self
+    }
 
     // build cq_ex
-    pub fn build_ex(&self) -> Result<CompletionQueueExtended<'ctx>, String> {
+    pub fn build_ex(&self) -> Result<CompletionQueueExtended<'ctx, 'channel>, String> {
         // create a copy of init_attr since ibv_create_cq_ex requires a mutable pointer to it
         let mut init_attr = self.init_attr.clone();
         match unsafe { ibv_create_cq_ex(self.dev_ctx.context, &mut init_attr as *mut _) } {
             Some(cq_ex) => Ok(CompletionQueueExtended {
                 cq_ex: ptr::NonNull::new(cq_ex).ok_or(String::from("ibv_create_cq_ex failed"))?,
-                // TODO should associate the lifetime of dev_ctx with CQ
-                _dev_ctx: PhantomData,
+                // associate the lifetime of dev_ctx & comp_channel with CQ
+                _phantom: PhantomData,
             }),
             None => Err(String::from("ibv_create_cq_ex failed")),
         }
     }
 
     // build legacy cq
-    pub fn build(&self) -> Result<CompletionQueue<'ctx>, String> {
+    pub fn build(&self) -> Result<CompletionQueue<'ctx, 'channel>, String> {
         let cq = unsafe {
             ibv_create_cq(
                 self.dev_ctx.context,
@@ -144,8 +150,8 @@ impl<'ctx> CompletionQueueBuilder<'ctx> {
         };
         Ok(CompletionQueue {
             cq: ptr::NonNull::new(cq).ok_or(String::from("ibv_create_cq failed"))?,
-            // TODO should associate the lifetime of dev_ctx with CQ
-            _dev_ctx: PhantomData,
+            // associate the lifetime of dev_ctx & comp_channel with CQ
+            _phantom: PhantomData,
         })
     }
 }
