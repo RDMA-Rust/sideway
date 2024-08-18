@@ -86,18 +86,6 @@ impl DeviceContext {
         }))
     }
 
-    pub fn create_cq(&self, cqe: i32) -> Result<CompletionQueue, String> {
-        let cq = unsafe { ibv_create_cq(self.context, cqe, null_mut(), null_mut(), 0) };
-
-        if cq.is_null() {
-            return Err(format!("Create cq failed! {:?}", io::Error::last_os_error()));
-        }
-
-        Ok(CompletionQueue::new(&self, unsafe {
-            NonNull::new(cq).unwrap_unchecked()
-        }))
-    }
-
     pub fn query_device(&self) -> Result<DeviceAttr, String> {
         let mut attr = MaybeUninit::<ibv_device_attr_ex>::uninit();
         unsafe {
