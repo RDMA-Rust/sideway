@@ -1,4 +1,3 @@
-use sideway::verbs::completion;
 use sideway::verbs::device;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -6,8 +5,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for device in &device_list {
         let ctx = device.open().unwrap();
 
-        let comp_channel = completion::CompletionChannel::new(&ctx).unwrap();
-        let mut builder = completion::CompletionQueueBuilder::new(&ctx);
+        let comp_channel = ctx.create_comp_channel().unwrap();
+        let mut builder = ctx.create_cq_builder();
         let cq = builder.setup_cqe(128).build().unwrap();
         let cq_ex = builder.setup_cqe(256).build_ex().unwrap();
         println!("comp_channel pointer is {:?}", comp_channel);

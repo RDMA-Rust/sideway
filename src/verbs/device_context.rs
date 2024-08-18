@@ -1,13 +1,14 @@
 use crate::verbs::address_handle::Gid;
 use std::io;
 use std::mem::MaybeUninit;
-use std::ptr::{self, null_mut, NonNull};
+use std::ptr::{self, NonNull};
 
 use rdma_mummy_sys::{
-    ___ibv_query_port, ibv_alloc_pd, ibv_close_device, ibv_context, ibv_create_cq, ibv_create_cq_ex,
-    ibv_device_attr_ex, ibv_port_attr, ibv_query_device_ex, ibv_query_gid, ibv_query_gid_type,
+    ___ibv_query_port, ibv_alloc_pd, ibv_close_device, ibv_context, ibv_device_attr_ex, ibv_port_attr,
+    ibv_query_device_ex, ibv_query_gid, ibv_query_gid_type,
 };
 
+use super::completion::{CompletionChannel, CompletionQueueBuilder};
 use super::protection_domain::ProtectionDomain;
 
 pub struct DeviceContext {
@@ -84,6 +85,14 @@ impl DeviceContext {
         Ok(ProtectionDomain::new(&self, unsafe {
             NonNull::new(pd).unwrap_unchecked()
         }))
+    }
+
+    pub fn create_comp_channel(&self) -> Result<CompletionChannel, String> {
+        CompletionChannel::new(&self)
+    }
+
+    pub fn create_cq_builder(&self) -> CompletionQueueBuilder {
+        CompletionQueueBuilder::new(&self)
     }
 
     pub fn query_device(&self) -> Result<DeviceAttr, String> {
