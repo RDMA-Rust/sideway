@@ -2,6 +2,7 @@ use super::protection_domain::ProtectionDomain;
 use rdma_mummy_sys::{ibv_dereg_mr, ibv_mr};
 use std::{
     alloc::{dealloc, handle_alloc_error, Layout},
+    marker::PhantomData,
     ptr::NonNull,
 };
 
@@ -32,7 +33,7 @@ impl Buffer {
 pub struct MemoryRegion<'pd> {
     pub buf: Buffer,
     mr: NonNull<ibv_mr>,
-    pd: &'pd ProtectionDomain<'pd>,
+    _pd: PhantomData<&'pd ()>,
 }
 
 impl Drop for MemoryRegion<'_> {
@@ -46,7 +47,11 @@ impl Drop for MemoryRegion<'_> {
 
 impl MemoryRegion<'_> {
     pub(crate) fn new<'pd>(pd: &'pd ProtectionDomain<'pd>, buf: Buffer, mr: NonNull<ibv_mr>) -> MemoryRegion<'pd> {
-        MemoryRegion { buf, mr, pd }
+        MemoryRegion {
+            buf,
+            mr,
+            _pd: PhantomData,
+        }
     }
 
     pub fn lkey(&self) -> u32 {
