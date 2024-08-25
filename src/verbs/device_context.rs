@@ -4,7 +4,7 @@ use std::mem::MaybeUninit;
 use std::ptr::{self, NonNull};
 
 use rdma_mummy_sys::{
-    ___ibv_query_port, ibv_alloc_pd, ibv_close_device, ibv_context, ibv_device_attr_ex, ibv_port_attr,
+    ___ibv_query_port, ibv_alloc_pd, ibv_close_device, ibv_context, ibv_device_attr_ex, ibv_mtu, ibv_port_attr,
     ibv_query_device_ex, ibv_query_gid, ibv_query_gid_type,
 };
 
@@ -15,25 +15,25 @@ pub struct DeviceContext {
     pub(crate) context: *mut ibv_context,
 }
 
+#[repr(u32)]
 #[derive(Debug, Clone, Copy)]
 pub enum Mtu {
-    IbvMtu256 = 1,
-    IbvMtu512 = 2,
-    IbvMtu1024 = 3,
-    IbvMtu2048 = 4,
-    IbvMtu4096 = 5,
-    Unknown,
+    Mtu256 = ibv_mtu::IBV_MTU_256,
+    Mtu512 = ibv_mtu::IBV_MTU_512,
+    Mtu1024 = ibv_mtu::IBV_MTU_1024,
+    Mtu2048 = ibv_mtu::IBV_MTU_2048,
+    Mtu4096 = ibv_mtu::IBV_MTU_4096,
 }
 
 impl From<u32> for Mtu {
     fn from(mtu: u32) -> Self {
         match mtu {
-            _ if mtu == Mtu::IbvMtu256 as u32 => Mtu::IbvMtu256,
-            _ if mtu == Mtu::IbvMtu512 as u32 => Mtu::IbvMtu512,
-            _ if mtu == Mtu::IbvMtu1024 as u32 => Mtu::IbvMtu1024,
-            _ if mtu == Mtu::IbvMtu2048 as u32 => Mtu::IbvMtu2048,
-            _ if mtu == Mtu::IbvMtu4096 as u32 => Mtu::IbvMtu4096,
-            _ => Mtu::Unknown,
+            ibv_mtu::IBV_MTU_256 => Mtu::Mtu256,
+            ibv_mtu::IBV_MTU_512 => Mtu::Mtu512,
+            ibv_mtu::IBV_MTU_1024 => Mtu::Mtu1024,
+            ibv_mtu::IBV_MTU_2048 => Mtu::Mtu2048,
+            ibv_mtu::IBV_MTU_4096 => Mtu::Mtu4096,
+            _ => panic!("Unknown MTU value: {mtu}"),
         }
     }
 }

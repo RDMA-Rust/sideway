@@ -1,7 +1,8 @@
-use rdma_mummy_sys::{ibv_access_flags, ibv_mtu};
+use rdma_mummy_sys::ibv_access_flags;
 use sideway::verbs::{
     address_handle::AddressHandleAttribute,
     device,
+    device_context::Mtu,
     queue_pair::{QueuePairAttribute, QueuePairState},
 };
 
@@ -39,7 +40,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // modify QP to RTR state
         let mut attr = QueuePairAttribute::new();
         attr.setup_state(QueuePairState::ReadyToReceive)
-            .setup_path_mtu(ibv_mtu::IBV_MTU_1024)
+            .setup_path_mtu(Mtu::Mtu1024)
             .setup_dest_qp_num(12345)
             .setup_rq_psn(1)
             .setup_max_dest_read_atomic(0)

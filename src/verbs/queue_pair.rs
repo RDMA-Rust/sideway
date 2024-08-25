@@ -9,7 +9,10 @@ use std::{
     ptr::{null_mut, NonNull},
 };
 
-use super::{address_handle::AddressHandleAttribute, completion::CompletionQueue, protection_domain::ProtectionDomain};
+use super::{
+    address_handle::AddressHandleAttribute, completion::CompletionQueue, device_context::Mtu,
+    protection_domain::ProtectionDomain,
+};
 
 #[repr(u32)]
 #[derive(Debug, Clone, Copy)]
@@ -230,9 +233,8 @@ impl QueuePairAttribute {
         self
     }
 
-    // TODO: should we use a wrapper type for MTU?
-    pub fn setup_path_mtu(&mut self, path_mtu: u32) -> &mut Self {
-        self.attr.path_mtu = path_mtu;
+    pub fn setup_path_mtu(&mut self, path_mtu: Mtu) -> &mut Self {
+        self.attr.path_mtu = path_mtu as _;
         self.attr_mask |= ibv_qp_attr_mask::IBV_QP_PATH_MTU;
         self
     }
