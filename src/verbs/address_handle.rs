@@ -1,5 +1,5 @@
-use rdma_mummy_sys::ibv_gid;
-use std::{fmt, net::Ipv6Addr};
+use rdma_mummy_sys::{ibv_ah_attr, ibv_gid, ibv_global_route};
+use std::{fmt, mem::MaybeUninit, net::Ipv6Addr};
 
 #[derive(Default, Clone, Copy, Debug)]
 pub struct Gid {
@@ -49,5 +49,47 @@ impl Gid {
         let (prefix, aligned, suffix) = unsafe { self.raw.align_to::<u128>() };
 
         prefix.iter().all(|&x| x == 0) && suffix.iter().all(|&x| x == 0) && aligned.iter().all(|&x| x == 0)
+    }
+}
+
+pub struct AddressHandleAttribute {
+    pub(crate) attr: ibv_ah_attr,
+}
+
+impl AddressHandleAttribute {
+    pub fn new() -> Self {
+        AddressHandleAttribute {
+            attr: unsafe { MaybeUninit::zeroed().assume_init() },
+        }
+    }
+
+    pub fn setup_dest_lid(&mut self, dest_lid: u16) -> &mut Self {
+        self.attr.dlid = dest_lid;
+        self
+    }
+
+    pub fn setup_service_level(&mut self, sl: u8) -> &mut Self {
+        self.attr.sl = sl;
+        self
+    }
+
+    pub fn setup_port(&mut self, port_num: u8) -> &mut Self {
+        self.attr.port_num = port_num;
+        self
+    }
+
+    // TODO: should we setup the grh at once or set each fields separately?
+    pub fn setup_grh(
+        &mut self, dest_gid: &Gid, flow_label: u32, src_gid_index: u8, hop_limit: u8, traffic_class: u8,
+    ) -> &mut Self {
+        self.attr.grh = ibv_global_route {
+            dgid: dest_gid.clone().into(),
+            flow_label,
+            sgid_index: src_gid_index,
+            hop_limit,
+            traffic_class
+        };
+        self.attr.is_global = 1;
+        self
     }
 }

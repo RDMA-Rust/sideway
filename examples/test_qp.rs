@@ -1,5 +1,6 @@
-use rdma_mummy_sys::ibv_access_flags;
+use rdma_mummy_sys::{ibv_access_flags, ibv_mtu};
 use sideway::verbs::{
+    address_handle::AddressHandleAttribute,
     device,
     queue_pair::{QueuePairAttribute, QueuePairState},
 };
@@ -34,7 +35,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .setup_port(1)
             .setup_access_flags(ibv_access_flags::IBV_ACCESS_REMOTE_WRITE);
         qp.modify(&attr).unwrap();
+
         // modify QP to RTR state
+        let mut attr = QueuePairAttribute::new();
+        attr.setup_state(QueuePairState::ReadyToReceive)
+            .setup_path_mtu(ibv_mtu::IBV_MTU_1024)
+            .setup_dest_qp_num(12345)
+            .setup_rq_psn(1)
+            .setup_max_dest_read_atomic(0)
+            .setup_min_rnr_timer(0);
+        // setup address vector
+        let mut ah_attr = AddressHandleAttribute::new();
+        ah_attr.setup_dest_lid(1).setup_port(1).setup_service_level(1);
+        attr.setup_address_vector(&ah_attr);
+        qp.modify(&attr).unwrap();
     }
 
     Ok(())
