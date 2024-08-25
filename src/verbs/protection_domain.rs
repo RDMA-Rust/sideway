@@ -1,10 +1,9 @@
-use rdma_mummy_sys::{ibv_create_qp_ex, ibv_dealloc_pd, ibv_pd, ibv_qp_init_attr_ex, ibv_reg_mr};
+use rdma_mummy_sys::{ibv_dealloc_pd, ibv_pd, ibv_reg_mr};
 use std::io;
 use std::marker::PhantomData;
 use std::ptr::NonNull;
 
 use super::{
-    completion::CompletionQueue,
     device_context::DeviceContext,
     memory_region::{Buffer, MemoryRegion},
     queue_pair::QueuePairBuilder,

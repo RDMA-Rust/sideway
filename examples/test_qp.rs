@@ -1,4 +1,8 @@
-use sideway::verbs::device;
+use rdma_mummy_sys::ibv_access_flags;
+use sideway::verbs::{
+    device,
+    queue_pair::{QueuePairAttribute, QueuePairState},
+};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let device_list = device::DeviceList::new()?;
@@ -15,7 +19,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         let mut builder = pd.create_qp_builder();
 
-        let qp = builder
+        let mut qp = builder
             .setup_max_inline_data(128)
             .setup_send_cq(&sq)
             .setup_recv_cq(&rq)
@@ -23,6 +27,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .unwrap();
 
         println!("qp pointer is {:?}", qp);
+        // modify QP to INIT state
+        let mut attr = QueuePairAttribute::new();
+        attr.setup_state(QueuePairState::Init)
+            .setup_pkey_index(0)
+            .setup_port(1)
+            .setup_access_flags(ibv_access_flags::IBV_ACCESS_REMOTE_WRITE);
+        qp.modify(&attr).unwrap();
+        // modify QP to RTR state
     }
 
     Ok(())
