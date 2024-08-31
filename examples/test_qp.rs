@@ -1,8 +1,6 @@
-use std::net::Ipv6Addr;
-
 use rdma_mummy_sys::ibv_access_flags;
 use sideway::verbs::{
-    address::{AddressHandleAttribute, Gid},
+    address::AddressHandleAttribute,
     device,
     device_context::Mtu,
     queue_pair::{QueuePairAttribute, QueuePairState},
@@ -49,16 +47,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .setup_min_rnr_timer(0);
         // setup address vector
         let mut ah_attr = AddressHandleAttribute::new();
+        let gid_entries = ctx.query_gid_table().unwrap();
+
         ah_attr
             .setup_dest_lid(1)
             .setup_port(1)
             .setup_service_level(1)
-            .setup_grh_src_gid_index(1)
-            .setup_grh_dest_gid(&Gid {
-                raw: "::ffff:192.168.1.1".parse::<Ipv6Addr>().unwrap().octets(),
-            })
+            .setup_grh_src_gid_index(gid_entries[0].gid_index().try_into().unwrap())
+            .setup_grh_dest_gid(&gid_entries[0].gid())
             .setup_grh_hop_limit(64);
         attr.setup_address_vector(&ah_attr);
+        qp.modify(&attr).unwrap();
+
+        // modify QP to RTS state
+        let mut attr = QueuePairAttribute::new();
+        attr.setup_state(QueuePairState::ReadyToSend)
+            .setup_sq_psn(1)
+            .setup_timeout(12)
+            .setup_retry_cnt(7)
+            .setup_rnr_retry(7)
+            .setup_max_read_atomic(0);
+
         qp.modify(&attr).unwrap();
     }
 
