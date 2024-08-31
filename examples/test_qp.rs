@@ -2,7 +2,7 @@ use std::net::Ipv6Addr;
 
 use rdma_mummy_sys::ibv_access_flags;
 use sideway::verbs::{
-    address_handle::{AddressHandleAttribute, Gid},
+    address::{AddressHandleAttribute, Gid},
     device,
     device_context::Mtu,
     queue_pair::{QueuePairAttribute, QueuePairState},

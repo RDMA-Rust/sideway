@@ -1,4 +1,9 @@
-use rdma_mummy_sys::{ibv_ah_attr, ibv_gid, ibv_global_route};
+use libc::IF_NAMESIZE;
+use rdma_mummy_sys::{
+    ibv_ah_attr, ibv_gid, ibv_gid_entry, ibv_global_route, IBV_GID_TYPE_IB, IBV_GID_TYPE_ROCE_V1, IBV_GID_TYPE_ROCE_V2,
+};
+use std::ffi::CStr;
+use std::io;
 use std::{fmt, mem::MaybeUninit, net::Ipv6Addr};
 
 #[derive(Default, Clone, Copy, Debug)]
@@ -32,6 +37,12 @@ impl From<Gid> for Ipv6Addr {
     }
 }
 
+impl From<Ipv6Addr> for Gid {
+    fn from(addr: Ipv6Addr) -> Self {
+        Gid { raw: addr.octets() }
+    }
+}
+
 impl fmt::Display for Gid {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         for (i, &byte) in self.raw.iter().enumerate() {
@@ -49,6 +60,83 @@ impl Gid {
         let (prefix, aligned, suffix) = unsafe { self.raw.align_to::<u128>() };
 
         prefix.iter().all(|&x| x == 0) && suffix.iter().all(|&x| x == 0) && aligned.iter().all(|&x| x == 0)
+    }
+}
+
+#[repr(u32)]
+pub enum GidType {
+    InfiniBand = IBV_GID_TYPE_IB,
+    RoceV1 = IBV_GID_TYPE_ROCE_V1,
+    RoceV2 = IBV_GID_TYPE_ROCE_V2,
+}
+
+impl From<u32> for GidType {
+    fn from(gid_type: u32) -> Self {
+        match gid_type {
+            IBV_GID_TYPE_IB => GidType::InfiniBand,
+            IBV_GID_TYPE_ROCE_V1 => GidType::RoceV1,
+            IBV_GID_TYPE_ROCE_V2 => GidType::RoceV2,
+            _ => panic!("Unknown Gid type: {gid_type}"),
+        }
+    }
+}
+
+#[repr(transparent)]
+#[derive(Clone, Copy)]
+pub struct GidEntry(pub(crate) ibv_gid_entry);
+
+impl Default for GidEntry {
+    fn default() -> Self {
+        GidEntry(ibv_gid_entry {
+            gid: Gid::default().into(),
+            gid_index: 0,
+            port_num: 1,
+            gid_type: 0,
+            ndev_ifindex: 0,
+        })
+    }
+}
+
+impl GidEntry {
+    #[inline]
+    pub fn gid_index(&self) -> u32 {
+        self.0.gid_index
+    }
+
+    #[inline]
+    pub fn port_num(&self) -> u32 {
+        self.0.port_num
+    }
+
+    #[inline]
+    pub fn gid_type(&self) -> GidType {
+        self.0.gid_type.into()
+    }
+
+    #[inline]
+    pub fn netdev_index(&self) -> u32 {
+        self.0.ndev_ifindex
+    }
+
+    pub fn netdev_name(&self) -> Result<String, String> {
+        let mut buf = vec![0u8; IF_NAMESIZE];
+
+        let return_buf = unsafe { libc::if_indextoname(self.netdev_index(), buf.as_mut_ptr().cast()) };
+
+        if return_buf.is_null() {
+            return Err(format!("get netdev name failed {:?}", io::Error::last_os_error()));
+        }
+
+        Ok(CStr::from_bytes_until_nul(buf.as_slice())
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_owned())
+    }
+
+    #[inline]
+    pub fn gid(&self) -> Gid {
+        unsafe { Gid { raw: self.0.gid.raw } }
     }
 }
 

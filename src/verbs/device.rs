@@ -1,5 +1,4 @@
-use core::num;
-use std::{ffi::CStr, io, marker::PhantomData, ptr::slice_from_raw_parts_mut};
+use std::{ffi::CStr, io, marker::PhantomData};
 
 use rdma_mummy_sys::{
     ibv_device, ibv_free_device_list, ibv_get_device_guid, ibv_get_device_list, ibv_get_device_name, ibv_open_device,

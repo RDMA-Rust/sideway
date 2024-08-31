@@ -1,4 +1,4 @@
-pub mod address_handle;
+pub mod address;
 pub mod completion;
 pub mod device;
 pub mod device_context;

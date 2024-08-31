@@ -10,7 +10,7 @@ use std::{
 };
 
 use super::{
-    address_handle::AddressHandleAttribute, completion::CompletionQueue, device_context::Mtu,
+    address::AddressHandleAttribute, completion::CompletionQueue, device_context::Mtu,
     protection_domain::ProtectionDomain,
 };
 
