@@ -1,6 +1,8 @@
+use std::net::Ipv6Addr;
+
 use rdma_mummy_sys::ibv_access_flags;
 use sideway::verbs::{
-    address_handle::AddressHandleAttribute,
+    address_handle::{AddressHandleAttribute, Gid},
     device,
     device_context::Mtu,
     queue_pair::{QueuePairAttribute, QueuePairState},
@@ -47,7 +49,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .setup_min_rnr_timer(0);
         // setup address vector
         let mut ah_attr = AddressHandleAttribute::new();
-        ah_attr.setup_dest_lid(1).setup_port(1).setup_service_level(1);
+        ah_attr
+            .setup_dest_lid(1)
+            .setup_port(1)
+            .setup_service_level(1)
+            .setup_grh_src_gid_index(1)
+            .setup_grh_dest_gid(&Gid {
+                raw: "::ffff:192.168.1.1".parse::<Ipv6Addr>().unwrap().octets(),
+            })
+            .setup_grh_hop_limit(64);
         attr.setup_address_vector(&ah_attr);
         qp.modify(&attr).unwrap();
     }

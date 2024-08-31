@@ -87,8 +87,26 @@ impl AddressHandleAttribute {
             flow_label,
             sgid_index: src_gid_index,
             hop_limit,
-            traffic_class
+            traffic_class,
         };
+        self.attr.is_global = 1;
+        self
+    }
+
+    pub fn setup_grh_dest_gid(&mut self, dest_gid: &Gid) -> &mut Self {
+        self.attr.grh.dgid = dest_gid.clone().into();
+        self.attr.is_global = 1;
+        self
+    }
+
+    pub fn setup_grh_src_gid_index(&mut self, src_gid_index: u8) -> &mut Self {
+        self.attr.grh.sgid_index = src_gid_index;
+        self.attr.is_global = 1;
+        self
+    }
+
+    pub fn setup_grh_hop_limit(&mut self, hop_limit: u8) -> &mut Self {
+        self.attr.grh.hop_limit = hop_limit;
         self.attr.is_global = 1;
         self
     }
