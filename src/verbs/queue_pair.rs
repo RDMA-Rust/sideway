@@ -1,16 +1,18 @@
 use rdma_mummy_sys::{
-    self, ibv_create_qp, ibv_destroy_qp, ibv_qp, ibv_qp_cap, ibv_qp_ex, ibv_qp_init_attr, ibv_qp_init_attr_ex,
-    ibv_qp_type, ibv_rx_hash_conf,
+    ibv_access_flags, ibv_create_qp, ibv_destroy_qp, ibv_modify_qp, ibv_qp, ibv_qp_attr, ibv_qp_attr_mask, ibv_qp_cap,
+    ibv_qp_ex, ibv_qp_init_attr, ibv_qp_init_attr_ex, ibv_qp_state, ibv_qp_type, ibv_rx_hash_conf,
 };
 use std::{
     io,
     marker::PhantomData,
     mem::MaybeUninit,
-    path::Path,
-    ptr::{null, null_mut, NonNull},
+    ptr::{null_mut, NonNull},
 };
 
-use super::{completion::CompletionQueue, protection_domain::ProtectionDomain};
+use super::{
+    address_handle::AddressHandleAttribute, completion::CompletionQueue, device_context::Mtu,
+    protection_domain::ProtectionDomain,
+};
 
 #[repr(u32)]
 #[derive(Debug, Clone, Copy)]
@@ -21,6 +23,19 @@ pub enum QueuePairType {
     RawPacket = ibv_qp_type::IBV_QPT_RAW_PACKET,
     ReliableConnectionExtendedSend = ibv_qp_type::IBV_QPT_XRC_SEND,
     ReliableConnectionExtendedRecv = ibv_qp_type::IBV_QPT_XRC_RECV,
+}
+
+#[repr(u32)]
+#[derive(Debug, Clone, Copy)]
+pub enum QueuePairState {
+    Reset = ibv_qp_state::IBV_QPS_RESET,
+    Init = ibv_qp_state::IBV_QPS_INIT,
+    ReadyToReceive = ibv_qp_state::IBV_QPS_RTR,
+    ReadyToSend = ibv_qp_state::IBV_QPS_RTS,
+    SendQueueDrain = ibv_qp_state::IBV_QPS_SQD,
+    SendQueueError = ibv_qp_state::IBV_QPS_SQE,
+    Error = ibv_qp_state::IBV_QPS_ERR,
+    Unknown = ibv_qp_state::IBV_QPS_UNKNOWN,
 }
 
 #[derive(Debug)]
@@ -72,7 +87,7 @@ impl<'res> QueuePairBuilder<'res> {
                 create_flags: 0,
                 max_tso_header: 0,
                 rwq_ind_tbl: null_mut(),
-                rx_hash_conf: unsafe { MaybeUninit::<ibv_rx_hash_conf>::uninit().assume_init() },
+                rx_hash_conf: unsafe { MaybeUninit::<ibv_rx_hash_conf>::zeroed().assume_init() },
                 source_qpn: 0,
                 send_ops_flags: 0,
             },
@@ -157,4 +172,102 @@ impl QueuePair<'_> {
     pub(crate) fn new<'pd>(pd: &'pd ProtectionDomain) -> Self {
         todo!()
     }
+
+    pub fn modify(&mut self, attr: &QueuePairAttribute) -> Result<(), String> {
+        // ibv_qp_attr does not impl Clone trait, so we use struct update syntax here
+        let mut qp_attr = ibv_qp_attr { ..attr.attr };
+        let ret = unsafe { ibv_modify_qp(self.qp.as_ptr(), &mut qp_attr as *mut _, attr.attr_mask.0 as _) };
+        if ret == 0 {
+            Ok(())
+        } else {
+            Err(format!("ibv_modify_qp failed, err={ret}"))
+        }
+    }
 }
+
+pub struct QueuePairAttribute {
+    attr: ibv_qp_attr,
+    attr_mask: ibv_qp_attr_mask,
+}
+
+impl QueuePairAttribute {
+    pub fn new() -> Self {
+        QueuePairAttribute {
+            attr: unsafe { MaybeUninit::zeroed().assume_init() },
+            attr_mask: ibv_qp_attr_mask(0),
+        }
+    }
+
+    // initialize attr from an existing one (this is useful when we interact with rdmacm)
+    pub fn from(attr: &ibv_qp_attr, attr_mask: u32) -> Self {
+        QueuePairAttribute {
+            attr: ibv_qp_attr { ..*attr },
+            attr_mask: ibv_qp_attr_mask(attr_mask),
+        }
+    }
+
+    // TODO what about the default value for qp_attr?
+
+    pub fn setup_state(&mut self, state: QueuePairState) -> &mut Self {
+        self.attr.qp_state = state as _;
+        self.attr_mask |= ibv_qp_attr_mask::IBV_QP_STATE;
+        self
+    }
+
+    pub fn setup_pkey_index(&mut self, pkey_index: u16) -> &mut Self {
+        self.attr.pkey_index = pkey_index;
+        self.attr_mask |= ibv_qp_attr_mask::IBV_QP_PKEY_INDEX;
+        self
+    }
+
+    pub fn setup_port(&mut self, port_num: u8) -> &mut Self {
+        self.attr.port_num = port_num;
+        self.attr_mask |= ibv_qp_attr_mask::IBV_QP_PORT;
+        self
+    }
+
+    // TODO(fuji): use ibv_access_flags directly or wrap a type for this?
+    pub fn setup_access_flags(&mut self, access_flags: ibv_access_flags) -> &mut Self {
+        self.attr.qp_access_flags = access_flags.0;
+        self.attr_mask |= ibv_qp_attr_mask::IBV_QP_ACCESS_FLAGS;
+        self
+    }
+
+    pub fn setup_path_mtu(&mut self, path_mtu: Mtu) -> &mut Self {
+        self.attr.path_mtu = path_mtu as _;
+        self.attr_mask |= ibv_qp_attr_mask::IBV_QP_PATH_MTU;
+        self
+    }
+
+    pub fn setup_dest_qp_num(&mut self, dest_qp_num: u32) -> &mut Self {
+        self.attr.dest_qp_num = dest_qp_num;
+        self.attr_mask |= ibv_qp_attr_mask::IBV_QP_DEST_QPN;
+        self
+    }
+
+    pub fn setup_rq_psn(&mut self, rq_psn: u32) -> &mut Self {
+        self.attr.rq_psn = rq_psn;
+        self.attr_mask |= ibv_qp_attr_mask::IBV_QP_RQ_PSN;
+        self
+    }
+
+    pub fn setup_max_dest_read_atomic(&mut self, max_dest_read_atomic: u8) -> &mut Self {
+        self.attr.max_dest_rd_atomic = max_dest_read_atomic;
+        self.attr_mask |= ibv_qp_attr_mask::IBV_QP_MAX_DEST_RD_ATOMIC;
+        self
+    }
+
+    pub fn setup_min_rnr_timer(&mut self, min_rnr_timer: u8) -> &mut Self {
+        self.attr.min_rnr_timer = min_rnr_timer;
+        self.attr_mask |= ibv_qp_attr_mask::IBV_QP_MIN_RNR_TIMER;
+        self
+    }
+
+    pub fn setup_address_vector(&mut self, ah_attr: &AddressHandleAttribute) -> &mut Self {
+        self.attr.ah_attr = ah_attr.attr.clone();
+        self.attr_mask |= ibv_qp_attr_mask::IBV_QP_AV;
+        self
+    }
+}
+
+// TODO(zhp): trait for QueuePair
