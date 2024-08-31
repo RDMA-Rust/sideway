@@ -125,19 +125,19 @@ impl<'res> QueuePairBuilder<'res> {
         self
     }
 
-    pub fn setup_send_cq<'sq>(&mut self, send_cq: &'sq CompletionQueue) -> &mut Self
+    pub fn setup_send_cq<'sq>(&mut self, send_cq: &'sq impl CompletionQueue) -> &mut Self
     where
         'sq: 'res,
     {
-        self.init_attr.send_cq = send_cq.cq.as_ptr();
+        self.init_attr.send_cq = unsafe { send_cq.cq().as_ptr() };
         self
     }
 
-    pub fn setup_recv_cq<'rq>(&mut self, recv_cq: &'rq CompletionQueue) -> &mut Self
+    pub fn setup_recv_cq<'rq>(&mut self, recv_cq: &'rq impl CompletionQueue) -> &mut Self
     where
         'rq: 'res,
     {
-        self.init_attr.recv_cq = recv_cq.cq.as_ptr();
+        self.init_attr.recv_cq = unsafe { recv_cq.cq().as_ptr() };
         self
     }
 

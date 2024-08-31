@@ -36,32 +36,52 @@ impl<'res> CompletionChannel<'res> {
     }
 }
 
+pub trait CompletionQueue {
+    //! return the basic handle of CQ;
+    //! we mark this method unsafe because the lifetime of ibv_cq is not
+    //! associated with the return value.
+    unsafe fn cq(&self) -> NonNull<ibv_cq>;
+}
+
 #[derive(Debug)]
-pub struct CompletionQueue<'res> {
+pub struct BasicCompletionQueue<'res> {
     pub(crate) cq: NonNull<ibv_cq>,
     // phantom data for dev_ctx & comp_channel
     _phantom: PhantomData<&'res ()>,
 }
 
-impl Drop for CompletionQueue<'_> {
+impl Drop for BasicCompletionQueue<'_> {
     fn drop(&mut self) {
         let ret = unsafe { ibv_destroy_cq(self.cq.as_ptr()) };
         assert_eq!(ret, 0);
     }
 }
 
+impl CompletionQueue for BasicCompletionQueue<'_> {
+    unsafe fn cq(&self) -> NonNull<ibv_cq> {
+        self.cq
+    }
+}
+
 #[derive(Debug)]
-pub struct CompletionQueueExtended<'res> {
+pub struct ExtendedCompletionQueue<'res> {
     pub(crate) cq_ex: NonNull<ibv_cq_ex>,
     // phantom data for dev_ctx & comp_channel
     _phantom: PhantomData<&'res ()>,
 }
 
-impl Drop for CompletionQueueExtended<'_> {
+impl Drop for ExtendedCompletionQueue<'_> {
     fn drop(&mut self) {
         // TODO convert cq_ex to cq (port ibv_cq_ex_to_cq in rdma-mummy-sys)
         let ret = unsafe { ibv_destroy_cq(self.cq_ex.as_ptr().cast()) };
         assert_eq!(ret, 0);
+    }
+}
+
+impl CompletionQueue for ExtendedCompletionQueue<'_> {
+    unsafe fn cq(&self) -> NonNull<ibv_cq> {
+        // TODO convert cq_ex to cq (port ibv_cq_ex_to_cq in rdma-mummy-sys)
+        self.cq_ex.cast()
     }
 }
 
@@ -113,12 +133,12 @@ impl<'res> CompletionQueueBuilder<'res> {
     }
     // TODO(fuji): set various attributes
 
-    // build cq_ex
-    pub fn build_ex(&self) -> Result<CompletionQueueExtended<'res>, String> {
+    // build extended cq
+    pub fn build_ex(&self) -> Result<ExtendedCompletionQueue<'res>, String> {
         // create a copy of init_attr since ibv_create_cq_ex requires a mutable pointer to it
         let mut init_attr = self.init_attr.clone();
         match unsafe { ibv_create_cq_ex(self.dev_ctx.context, &mut init_attr as *mut _) } {
-            Some(cq_ex) => Ok(CompletionQueueExtended {
+            Some(cq_ex) => Ok(ExtendedCompletionQueue {
                 cq_ex: NonNull::new(cq_ex).ok_or(String::from("ibv_create_cq_ex failed"))?,
                 // associate the lifetime of dev_ctx & comp_channel with CQ
                 _phantom: PhantomData,
@@ -127,8 +147,8 @@ impl<'res> CompletionQueueBuilder<'res> {
         }
     }
 
-    // build legacy cq
-    pub fn build(&self) -> Result<CompletionQueue<'res>, String> {
+    // build basic cq
+    pub fn build(&self) -> Result<BasicCompletionQueue<'res>, String> {
         let cq = unsafe {
             ibv_create_cq(
                 self.dev_ctx.context,
@@ -138,7 +158,7 @@ impl<'res> CompletionQueueBuilder<'res> {
                 self.init_attr.comp_vector as _,
             )
         };
-        Ok(CompletionQueue {
+        Ok(BasicCompletionQueue {
             cq: NonNull::new(cq).ok_or(String::from("ibv_create_cq failed"))?,
             // associate the lifetime of dev_ctx & comp_channel with CQ
             _phantom: PhantomData,
