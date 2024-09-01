@@ -10,7 +10,7 @@ use std::{
 };
 
 use super::{
-    address_handle::AddressHandleAttribute, completion::CompletionQueue, device_context::Mtu,
+    address::AddressHandleAttribute, completion::CompletionQueue, device_context::Mtu,
     protection_domain::ProtectionDomain,
 };
 
@@ -251,6 +251,18 @@ impl QueuePairAttribute {
         self
     }
 
+    pub fn setup_sq_psn(&mut self, sq_psn: u32) -> &mut Self {
+        self.attr.sq_psn = sq_psn;
+        self.attr_mask |= ibv_qp_attr_mask::IBV_QP_SQ_PSN;
+        self
+    }
+
+    pub fn setup_max_read_atomic(&mut self, max_read_atomic: u8) -> &mut Self {
+        self.attr.max_rd_atomic = max_read_atomic;
+        self.attr_mask |= ibv_qp_attr_mask::IBV_QP_MAX_QP_RD_ATOMIC;
+        self
+    }
+
     pub fn setup_max_dest_read_atomic(&mut self, max_dest_read_atomic: u8) -> &mut Self {
         self.attr.max_dest_rd_atomic = max_dest_read_atomic;
         self.attr_mask |= ibv_qp_attr_mask::IBV_QP_MAX_DEST_RD_ATOMIC;
@@ -260,6 +272,24 @@ impl QueuePairAttribute {
     pub fn setup_min_rnr_timer(&mut self, min_rnr_timer: u8) -> &mut Self {
         self.attr.min_rnr_timer = min_rnr_timer;
         self.attr_mask |= ibv_qp_attr_mask::IBV_QP_MIN_RNR_TIMER;
+        self
+    }
+
+    pub fn setup_timeout(&mut self, timeout: u8) -> &mut Self {
+        self.attr.timeout = timeout;
+        self.attr_mask |= ibv_qp_attr_mask::IBV_QP_TIMEOUT;
+        self
+    }
+
+    pub fn setup_retry_cnt(&mut self, retry_cnt: u8) -> &mut Self {
+        self.attr.retry_cnt = retry_cnt;
+        self.attr_mask |= ibv_qp_attr_mask::IBV_QP_RETRY_CNT;
+        self
+    }
+
+    pub fn setup_rnr_retry(&mut self, rnr_retry: u8) -> &mut Self {
+        self.attr.rnr_retry = rnr_retry;
+        self.attr_mask |= ibv_qp_attr_mask::IBV_QP_RNR_RETRY;
         self
     }
 

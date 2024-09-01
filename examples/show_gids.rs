@@ -1,9 +1,9 @@
-use std::{
-    fs,
-    net::{Ipv4Addr, Ipv6Addr},
-};
+use std::net::{Ipv4Addr, Ipv6Addr};
 
-use sideway::verbs::{address_handle::Gid, device};
+use sideway::verbs::{
+    address::{Gid, GidType},
+    device,
+};
 use tabled::{
     settings::{object::Segment, Alignment, Modify, Style},
     Table, Tabled,
@@ -41,45 +41,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for device in &device_list {
         let ctx = device.open().unwrap();
 
-        let dev_attr = ctx.query_device().unwrap();
+        if let Some(name) = device.name() {
+            let gid_entries = ctx.query_gid_table().unwrap();
 
-        for port_num in 1..(dev_attr.phys_port_cnt() + 1) {
-            let port_attr = ctx.query_port(port_num).unwrap();
-
-            if let Some(name) = device.name() {
-                for gid_index in 0..port_attr.gid_tbl_len() {
-                    let gid = ctx.query_gid(port_num, gid_index).unwrap();
-
-                    if gid.is_zero() {
-                        continue;
-                    }
-
-                    let gid_type = ctx.query_gid_type(port_num, gid_index as u32).unwrap();
-
-                    let netdev = fs::read_to_string(format!(
-                        "/sys/class/infiniband/{}/ports/{}/gid_attrs/ndevs/{}",
-                        name, port_num, gid_index
-                    ))?
-                    .trim_ascii_end()
-                    .to_string();
-
-                    devices.push(GidEntries {
-                        dev_name: name.clone(),
-                        port: port_num.into(),
-                        index: gid_index,
-                        gid,
-                        ipv4: Ipv6Addr::from(gid).to_ipv4_mapped(),
-                        ver: match gid_type {
-                            0 => "IB/RoCEv1",
-                            1 => "RoCEv2",
-                            _ => "Unknown",
-                        },
-                        netdev,
-                    });
-                }
-            } else {
-                eprintln!("Found a device without a name, skipping.");
+            for gid in gid_entries {
+                devices.push(GidEntries {
+                    dev_name: name.clone(),
+                    port: gid.port_num(),
+                    index: gid.gid_index() as _,
+                    gid: gid.gid(),
+                    ipv4: Ipv6Addr::from(gid.gid()).to_ipv4_mapped(),
+                    ver: match gid.gid_type() {
+                        GidType::InfiniBand => "IB",
+                        GidType::RoceV1 => "RoCEv1",
+                        GidType::RoceV2 => "RoCEv2",
+                    },
+                    netdev: gid.netdev_name().unwrap(),
+                });
             }
+        } else {
+            eprintln!("Found a device without a name, skipping.");
         }
     }
 
