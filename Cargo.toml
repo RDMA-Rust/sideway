@@ -3,6 +3,7 @@ name = "sideway"
 version = "0.1.0"
 authors = [
     "Luke Yue <lukedyue@gmail.com>",
+    "FujiZ <i@fujiz.me>",
 ]
 edition = "2021"
 
