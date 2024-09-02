@@ -1,6 +1,7 @@
 use rdma_mummy_sys::{
-    ibv_access_flags, ibv_create_qp, ibv_destroy_qp, ibv_modify_qp, ibv_qp, ibv_qp_attr, ibv_qp_attr_mask, ibv_qp_cap,
-    ibv_qp_ex, ibv_qp_init_attr, ibv_qp_init_attr_ex, ibv_qp_state, ibv_qp_type, ibv_rx_hash_conf,
+    ibv_access_flags, ibv_create_qp, ibv_create_qp_ex, ibv_destroy_qp, ibv_modify_qp, ibv_qp, ibv_qp_attr,
+    ibv_qp_attr_mask, ibv_qp_cap, ibv_qp_ex, ibv_qp_init_attr, ibv_qp_init_attr_ex, ibv_qp_state, ibv_qp_type,
+    ibv_rx_hash_conf,
 };
 use std::{
     io,
@@ -26,7 +27,7 @@ pub enum QueuePairType {
 }
 
 #[repr(u32)]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum QueuePairState {
     Reset = ibv_qp_state::IBV_QPS_RESET,
     Init = ibv_qp_state::IBV_QPS_INIT,
@@ -38,26 +39,90 @@ pub enum QueuePairState {
     Unknown = ibv_qp_state::IBV_QPS_UNKNOWN,
 }
 
+impl From<u32> for QueuePairState {
+    fn from(state: u32) -> Self {
+        match state {
+            ibv_qp_state::IBV_QPS_RESET => QueuePairState::Reset,
+            ibv_qp_state::IBV_QPS_INIT => QueuePairState::Init,
+            ibv_qp_state::IBV_QPS_RTR => QueuePairState::ReadyToReceive,
+            ibv_qp_state::IBV_QPS_RTS => QueuePairState::ReadyToSend,
+            ibv_qp_state::IBV_QPS_SQD => QueuePairState::SendQueueDrain,
+            ibv_qp_state::IBV_QPS_SQE => QueuePairState::SendQueueError,
+            ibv_qp_state::IBV_QPS_ERR => QueuePairState::Error,
+            ibv_qp_state::IBV_QPS_UNKNOWN => QueuePairState::Unknown,
+            _ => panic!("Unknown qp state: {state}"),
+        }
+    }
+}
+
+pub trait QueuePair {
+    //! return the basic handle of QP;
+    //! we mark this method unsafe because the lifetime of ibv_qp is not
+    //! associated with the return value.
+    unsafe fn qp(&self) -> NonNull<ibv_qp>;
+
+    fn modify(&mut self, attr: &QueuePairAttribute) -> Result<(), String> {
+        // ibv_qp_attr does not impl Clone trait, so we use struct update syntax here
+        let mut qp_attr = ibv_qp_attr { ..attr.attr };
+        let ret = unsafe { ibv_modify_qp(self.qp().as_ptr(), &mut qp_attr as *mut _, attr.attr_mask.0 as _) };
+        if ret == 0 {
+            Ok(())
+        } else {
+            Err(format!("ibv_modify_qp failed, err={ret}"))
+        }
+    }
+
+    fn state(&self) -> QueuePairState {
+        unsafe { (*self.qp().as_ref()).state.into() }
+    }
+}
+
 #[derive(Debug)]
-pub struct QueuePair<'res> {
+pub struct BasicQueuePair<'res> {
     pub(crate) qp: NonNull<ibv_qp>,
+    // phantom data for protection domain & completion queues
     _phantom: PhantomData<&'res ()>,
 }
 
-impl Drop for QueuePair<'_> {
+impl Drop for BasicQueuePair<'_> {
     fn drop(&mut self) {
         let ret = unsafe { ibv_destroy_qp(self.qp.as_ptr()) };
         assert_eq!(ret, 0);
     }
 }
 
-pub struct QueuePairExtended<'res> {
-    pub(crate) qp_ex: NonNull<ibv_qp_ex>,
+impl QueuePair for BasicQueuePair<'_> {
+    unsafe fn qp(&self) -> NonNull<ibv_qp> {
+        self.qp
+    }
+}
+
+#[derive(Debug)]
+pub struct ExtendedQueuePair<'res> {
+    // TODO: ibv_create_qp_ex returns ibv_qp instead of ibv_qp_ex, to be fixed
+    pub(crate) qp_ex: NonNull<ibv_qp>,
+    // phantom data for protection domain & completion queues
     _phantom: PhantomData<&'res ()>,
+}
+
+impl Drop for ExtendedQueuePair<'_> {
+    fn drop(&mut self) {
+        // TODO: convert qp_ex to qp (port ibv_qp_ex_to_qp in rdma-mummy-sys)
+        let ret = unsafe { ibv_destroy_qp(self.qp_ex.as_ptr().cast()) };
+        assert_eq!(ret, 0)
+    }
+}
+
+impl QueuePair for ExtendedQueuePair<'_> {
+    unsafe fn qp(&self) -> NonNull<ibv_qp> {
+        // TODO: convert qp_ex to qp (port ibv_qp_ex_to_qp in rdma-mummy-sys)
+        self.qp_ex.cast()
+    }
 }
 
 pub struct QueuePairBuilder<'res> {
     init_attr: ibv_qp_init_attr_ex,
+    // phantom data for protection domain & completion queues
     _phantom: PhantomData<&'res ()>,
 }
 
@@ -141,7 +206,8 @@ impl<'res> QueuePairBuilder<'res> {
         self
     }
 
-    pub fn build(&self) -> Result<QueuePair<'res>, String> {
+    // build basic qp
+    pub fn build(&self) -> Result<BasicQueuePair<'res>, String> {
         let qp = unsafe {
             ibv_create_qp(
                 self.init_attr.pd,
@@ -157,31 +223,20 @@ impl<'res> QueuePairBuilder<'res> {
             )
         };
 
-        Ok(QueuePair {
+        Ok(BasicQueuePair {
             qp: NonNull::new(qp).ok_or(format!("ibv_create_qp failed, {}", io::Error::last_os_error()))?,
             _phantom: PhantomData,
         })
     }
 
-    pub fn build_ex() -> () {
-        todo!();
-    }
-}
+    // build extended qp
+    pub fn build_ex(&mut self) -> Result<ExtendedQueuePair<'res>, String> {
+        let qp = unsafe { ibv_create_qp_ex((*self.init_attr.pd).context, &mut self.init_attr).unwrap_or(null_mut()) };
 
-impl QueuePair<'_> {
-    pub(crate) fn new<'pd>(pd: &'pd ProtectionDomain) -> Self {
-        todo!()
-    }
-
-    pub fn modify(&mut self, attr: &QueuePairAttribute) -> Result<(), String> {
-        // ibv_qp_attr does not impl Clone trait, so we use struct update syntax here
-        let mut qp_attr = ibv_qp_attr { ..attr.attr };
-        let ret = unsafe { ibv_modify_qp(self.qp.as_ptr(), &mut qp_attr as *mut _, attr.attr_mask.0 as _) };
-        if ret == 0 {
-            Ok(())
-        } else {
-            Err(format!("ibv_modify_qp failed, err={ret}"))
-        }
+        Ok(ExtendedQueuePair {
+            qp_ex: NonNull::new(qp).ok_or(format!("ibv_create_qp failed, {}", io::Error::last_os_error()))?,
+            _phantom: PhantomData,
+        })
     }
 }
 
