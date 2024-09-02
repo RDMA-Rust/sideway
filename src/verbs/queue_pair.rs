@@ -1,12 +1,14 @@
 use bitmask_enum::bitmask;
 use lazy_static::lazy_static;
 use rdma_mummy_sys::{
-    ibv_create_qp, ibv_create_qp_ex, ibv_destroy_qp, ibv_modify_qp, ibv_qp, ibv_qp_attr, ibv_qp_attr_mask, ibv_qp_cap,
-    ibv_qp_create_send_ops_flags, ibv_qp_ex, ibv_qp_init_attr, ibv_qp_init_attr_ex, ibv_qp_init_attr_mask,
-    ibv_qp_state, ibv_qp_to_qp_ex, ibv_qp_type, ibv_rx_hash_conf,
+    ibv_create_qp, ibv_create_qp_ex, ibv_data_buf, ibv_destroy_qp, ibv_modify_qp, ibv_qp, ibv_qp_attr,
+    ibv_qp_attr_mask, ibv_qp_cap, ibv_qp_create_send_ops_flags, ibv_qp_ex, ibv_qp_init_attr, ibv_qp_init_attr_ex,
+    ibv_qp_init_attr_mask, ibv_qp_state, ibv_qp_to_qp_ex, ibv_qp_type, ibv_rx_hash_conf, ibv_send_flags, ibv_wr_abort,
+    ibv_wr_complete, ibv_wr_opcode, ibv_wr_rdma_write, ibv_wr_send, ibv_wr_set_inline_data,
+    ibv_wr_set_inline_data_list, ibv_wr_start,
 };
 use std::{
-    io,
+    io::{self, IoSlice},
     marker::PhantomData,
     mem::MaybeUninit,
     ptr::{null_mut, NonNull},
@@ -75,6 +77,58 @@ pub enum SendOperationFlags {
     AtomicWrite = ibv_qp_create_send_ops_flags::IBV_QP_EX_WITH_ATOMIC_WRITE.0 as _,
 }
 
+#[repr(u32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkRequestOperationType {
+    Send = ibv_wr_opcode::IBV_WR_SEND,
+    SendWithImmediate = ibv_wr_opcode::IBV_WR_SEND_WITH_IMM,
+    Write = ibv_wr_opcode::IBV_WR_RDMA_WRITE,
+    WriteWithImmediate = ibv_wr_opcode::IBV_WR_RDMA_WRITE_WITH_IMM,
+    Read = ibv_wr_opcode::IBV_WR_RDMA_READ,
+    AtomicCompareAndSwap = ibv_wr_opcode::IBV_WR_ATOMIC_CMP_AND_SWP,
+    AtomicFetchAndAdd = ibv_wr_opcode::IBV_WR_ATOMIC_FETCH_AND_ADD,
+    LocalInvalidate = ibv_wr_opcode::IBV_WR_LOCAL_INV,
+    BindMemoryWindow = ibv_wr_opcode::IBV_WR_BIND_MW,
+    SendWithInvalidate = ibv_wr_opcode::IBV_WR_SEND_WITH_INV,
+    TcpSegmentationOffload = ibv_wr_opcode::IBV_WR_TSO,
+    Driver1 = ibv_wr_opcode::IBV_WR_DRIVER1,
+    Flush = ibv_wr_opcode::IBV_WR_FLUSH,
+    AtomicWrite = ibv_wr_opcode::IBV_WR_ATOMIC_WRITE,
+}
+
+impl From<u32> for WorkRequestOperationType {
+    fn from(opcode: u32) -> Self {
+        match opcode {
+            ibv_wr_opcode::IBV_WR_SEND => WorkRequestOperationType::Send,
+            ibv_wr_opcode::IBV_WR_SEND_WITH_IMM => WorkRequestOperationType::SendWithImmediate,
+            ibv_wr_opcode::IBV_WR_RDMA_WRITE => WorkRequestOperationType::Write,
+            ibv_wr_opcode::IBV_WR_RDMA_WRITE_WITH_IMM => WorkRequestOperationType::WriteWithImmediate,
+            ibv_wr_opcode::IBV_WR_RDMA_READ => WorkRequestOperationType::Read,
+            ibv_wr_opcode::IBV_WR_ATOMIC_CMP_AND_SWP => WorkRequestOperationType::AtomicCompareAndSwap,
+            ibv_wr_opcode::IBV_WR_ATOMIC_FETCH_AND_ADD => WorkRequestOperationType::AtomicFetchAndAdd,
+            ibv_wr_opcode::IBV_WR_LOCAL_INV => WorkRequestOperationType::LocalInvalidate,
+            ibv_wr_opcode::IBV_WR_BIND_MW => WorkRequestOperationType::BindMemoryWindow,
+            ibv_wr_opcode::IBV_WR_SEND_WITH_INV => WorkRequestOperationType::SendWithInvalidate,
+            ibv_wr_opcode::IBV_WR_TSO => WorkRequestOperationType::TcpSegmentationOffload,
+            ibv_wr_opcode::IBV_WR_DRIVER1 => WorkRequestOperationType::Driver1,
+            ibv_wr_opcode::IBV_WR_FLUSH => WorkRequestOperationType::Flush,
+            ibv_wr_opcode::IBV_WR_ATOMIC_WRITE => WorkRequestOperationType::AtomicWrite,
+            _ => panic!("Unknown work request opcode: {opcode}"),
+        }
+    }
+}
+
+#[bitmask(u32)]
+#[bitmask_config(vec_debug)]
+pub enum WorkRequestFlags {
+    Fence = ibv_send_flags::IBV_SEND_FENCE.0,
+    Signaled = ibv_send_flags::IBV_SEND_SIGNALED.0,
+    Solicited = ibv_send_flags::IBV_SEND_SOLICITED.0,
+    Inline = ibv_send_flags::IBV_SEND_INLINE.0,
+    IpChecksum = ibv_send_flags::IBV_SEND_IP_CSUM.0,
+}
+
+#[allow(private_bounds)]
 pub trait QueuePair {
     //! return the basic handle of QP;
     //! we mark this method unsafe because the lifetime of ibv_qp is not
@@ -103,6 +157,51 @@ pub trait QueuePair {
     fn state(&self) -> QueuePairState {
         unsafe { self.qp().as_ref().state.into() }
     }
+
+    fn qp_number(&self) -> u32 {
+        unsafe { self.qp().as_ref().qp_num }
+    }
+
+    // Every qp should hold only one PostSendGuard at the same time.
+    //
+    // RPITIT could be used here, but with lifetime bound, there could be problems.
+    //
+    // Ref: https://github.com/rust-lang/rust/issues/128752
+    //      https://github.com/rust-lang/rust/issues/91611
+    //      https://github.com/rust-lang/rfcs/pull/3425
+    //      https://github.com/rust-lang/rust/issues/125836
+    //
+    type Guard<'g>: PostSendGuard
+    where
+        Self: 'g;
+    fn start_post_send<'qp, 'g>(&'qp mut self) -> Self::Guard<'g>
+    where
+        'qp: 'g;
+}
+
+mod private_traits {
+    use std::io::IoSlice;
+    // This is the private part of PostSendGuard, which is a workaround for pub trait
+    // not being able to have private functions.
+    //
+    // Ref: https://stackoverflow.com/questions/53204327/how-to-have-a-private-part-of-a-trait
+    //
+    pub trait PostSendGuard {
+        fn setup_send(&mut self);
+
+        fn setup_write(&mut self, rkey: u32, remote_addr: u64);
+
+        fn setup_inline_data(&mut self, buf: &[u8]);
+
+        fn setup_inline_data_list(&mut self, bufs: &[IoSlice<'_>]);
+    }
+}
+
+pub trait PostSendGuard: private_traits::PostSendGuard {
+    // every qp should hold only one WorkRequestHandle at the same time
+    fn construct_wr<'g>(&'g mut self, wr_id: u64, wr_flags: WorkRequestFlags) -> WorkRequestHandle<'g, Self>;
+
+    fn post(self) -> Result<(), String>;
 }
 
 // According to C standard, enums should be int, but Rust just uses whatever
@@ -293,6 +392,14 @@ impl QueuePair for BasicQueuePair<'_> {
     unsafe fn qp(&self) -> NonNull<ibv_qp> {
         self.qp
     }
+
+    type Guard<'g> = BasicPostSendGuard<'g> where Self: 'g;
+    fn start_post_send<'qp, 'g>(&'qp mut self) -> Self::Guard<'g>
+    where
+        'qp: 'g,
+    {
+        todo!()
+    }
 }
 
 #[derive(Debug)]
@@ -312,6 +419,23 @@ impl Drop for ExtendedQueuePair<'_> {
 impl QueuePair for ExtendedQueuePair<'_> {
     unsafe fn qp(&self) -> NonNull<ibv_qp> {
         NonNull::new_unchecked(&mut (*self.qp_ex.as_ptr()).qp_base as _)
+    }
+
+    type Guard<'g> = ExtendedPostSendGuard<'g> where Self: 'g;
+    fn start_post_send<'qp, 'g>(&'qp mut self) -> Self::Guard<'g>
+    where
+        'qp: 'g,
+    {
+        unsafe {
+            ibv_wr_start(self.qp().as_ptr() as _);
+        }
+
+        let guard = ExtendedPostSendGuard {
+            qp_ex: Some(self.qp_ex),
+            _phantom: PhantomData,
+        };
+
+        guard
     }
 }
 
@@ -596,5 +720,152 @@ fn attr_mask_check(
         Ok(())
     } else {
         Err(format!("Invalid transition from {cur_state:?} to {next_state:?}, possible invalid masks {invalid:?}, possible needed masks {needed:?}"))
+    }
+}
+
+pub struct WorkRequestHandle<'g, G: PostSendGuard + ?Sized> {
+    guard: &'g mut G,
+}
+
+pub trait SetSge {}
+
+pub trait SetInlineData {
+    fn setup_inline_data<'qp>(self, buf: &[u8]);
+
+    fn setup_inline_data_list<'qp>(self, bufs: &[IoSlice<'_>]);
+}
+
+pub struct SendHandle<'g, G: PostSendGuard> {
+    guard: &'g mut G,
+}
+
+pub struct WriteHandle<'g, G: PostSendGuard> {
+    guard: &'g mut G,
+}
+
+impl<'g, G: PostSendGuard> SetInlineData for WriteHandle<'g, G> {
+    fn setup_inline_data(self, buf: &[u8]) {
+        self.guard.setup_inline_data(buf);
+    }
+
+    fn setup_inline_data_list(self, bufs: &[IoSlice<'_>]) {
+        self.guard.setup_inline_data_list(bufs);
+    }
+}
+
+impl<'g, G: PostSendGuard> WorkRequestHandle<'g, G> {
+    pub fn setup_send(self) -> SendHandle<'g, G> {
+        self.guard.setup_send();
+        SendHandle { guard: self.guard }
+    }
+
+    pub fn setup_write(self, rkey: u32, remote_addr: u64) -> WriteHandle<'g, G> {
+        self.guard.setup_write(rkey, remote_addr);
+        WriteHandle { guard: self.guard }
+    }
+}
+
+pub struct BasicPostSendGuard<'qp> {
+    qp: NonNull<ibv_qp>,
+    _phantom: PhantomData<&'qp ()>,
+}
+
+impl PostSendGuard for BasicPostSendGuard<'_> {
+    fn construct_wr<'qp>(&'qp mut self, wr_id: u64, wr_flags: WorkRequestFlags) -> WorkRequestHandle<'qp, Self> {
+        todo!()
+    }
+
+    fn post(self) -> Result<(), String> {
+        todo!()
+    }
+}
+
+impl private_traits::PostSendGuard for BasicPostSendGuard<'_> {
+    fn setup_send(&mut self) {
+        todo!()
+    }
+
+    fn setup_write(&mut self, rkey: u32, remote_addr: u64) {
+        todo!()
+    }
+
+    fn setup_inline_data(&mut self, buf: &[u8]) {
+        todo!()
+    }
+
+    fn setup_inline_data_list(&mut self, bufs: &[IoSlice<'_>]) {
+        todo!()
+    }
+}
+
+pub struct ExtendedPostSendGuard<'qp> {
+    qp_ex: Option<NonNull<ibv_qp_ex>>,
+    _phantom: PhantomData<&'qp ()>,
+}
+
+impl PostSendGuard for ExtendedPostSendGuard<'_> {
+    fn construct_wr<'qp>(&'qp mut self, wr_id: u64, wr_flags: WorkRequestFlags) -> WorkRequestHandle<'qp, Self> {
+        unsafe {
+            self.qp_ex.unwrap_unchecked().as_mut().wr_id = wr_id;
+            self.qp_ex.unwrap_unchecked().as_mut().wr_flags = wr_flags.bits;
+        }
+        WorkRequestHandle { guard: self }
+    }
+
+    fn post(mut self) -> Result<(), String> {
+        let ret: i32 = unsafe { ibv_wr_complete(self.qp_ex.unwrap_unchecked().as_ptr()) };
+
+        self.qp_ex = None;
+
+        match ret {
+            0 => Ok(()),
+            err => Err(format!("failed to ibv_wr_complete: ret {err}")),
+        }
+    }
+}
+
+impl private_traits::PostSendGuard for ExtendedPostSendGuard<'_> {
+    fn setup_send(&mut self) {
+        unsafe {
+            ibv_wr_send(self.qp_ex.unwrap_unchecked().as_ptr());
+        }
+    }
+
+    fn setup_write(&mut self, rkey: u32, remote_addr: u64) {
+        unsafe {
+            ibv_wr_rdma_write(self.qp_ex.unwrap_unchecked().as_ptr(), rkey, remote_addr);
+        }
+    }
+
+    fn setup_inline_data(&mut self, buf: &[u8]) {
+        unsafe { ibv_wr_set_inline_data(self.qp_ex.unwrap_unchecked().as_ptr(), buf.as_ptr() as _, buf.len()) }
+    }
+
+    fn setup_inline_data_list(&mut self, bufs: &[IoSlice<'_>]) {
+        let mut buf_list = Vec::with_capacity(bufs.len());
+
+        buf_list.extend(bufs.iter().map(|x| ibv_data_buf {
+            addr: x.as_ptr() as _,
+            length: x.len(),
+        }));
+
+        unsafe {
+            ibv_wr_set_inline_data_list(
+                self.qp_ex.unwrap_unchecked().as_ptr(),
+                buf_list.len(),
+                buf_list.as_ptr(),
+            );
+        }
+    }
+}
+
+impl Drop for ExtendedPostSendGuard<'_> {
+    fn drop(&mut self) {
+        match self.qp_ex {
+            Some(qp_ex) => unsafe {
+                ibv_wr_abort(qp_ex.as_ptr());
+            },
+            None => (),
+        }
     }
 }
