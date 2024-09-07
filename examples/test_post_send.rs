@@ -90,7 +90,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         let _err = guard.post().unwrap();
 
-        thread::sleep(time::Duration::from_millis(5));
+        thread::sleep(time::Duration::from_millis(10));
+
+        // poll for the completion
+        {
+            let mut poller = sq.start_poll().unwrap();
+            let mut wc = poller.iter_mut();
+            println!("wr_id {}, status: {}, opcode: {}", wc.wr_id(), wc.status(), wc.opcode());
+            assert_eq!(wc.wr_id(), 233);
+            while let Some(wc) = wc.next() {
+                println!("wr_id {}, status: {}, opcode: {}", wc.wr_id(), wc.status(), wc.opcode())
+            }
+        }
 
         unsafe {
             let slice = std::slice::from_raw_parts(mr.buf.data.as_ptr(), mr.buf.len);

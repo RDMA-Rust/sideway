@@ -1,12 +1,13 @@
-use std::marker::PhantomData;
 use std::os::raw::c_void;
 use std::ptr;
 use std::ptr::NonNull;
+use std::{marker::PhantomData, mem::MaybeUninit};
 
 use super::device_context::DeviceContext;
 use rdma_mummy_sys::{
     ibv_comp_channel, ibv_cq, ibv_cq_ex, ibv_cq_init_attr_ex, ibv_create_comp_channel, ibv_create_cq, ibv_create_cq_ex,
-    ibv_destroy_comp_channel, ibv_destroy_cq, ibv_pd,
+    ibv_destroy_comp_channel, ibv_destroy_cq, ibv_end_poll, ibv_next_poll, ibv_pd, ibv_poll_cq_attr, ibv_start_poll,
+    ibv_wc_read_byte_len, ibv_wc_read_completion_ts, ibv_wc_read_opcode, ibv_wc_read_vendor_err,
 };
 
 #[derive(Debug)]
@@ -85,6 +86,25 @@ impl CompletionQueue for ExtendedCompletionQueue<'_> {
     }
 }
 
+impl ExtendedCompletionQueue<'_> {
+    pub fn start_poll<'cq>(&'cq self) -> Result<ExtendedPoller<'cq>, String> {
+        let ret = unsafe {
+            ibv_start_poll(
+                self.cq_ex.as_ptr(),
+                MaybeUninit::<ibv_poll_cq_attr>::zeroed().as_mut_ptr(),
+            )
+        };
+
+        match ret {
+            0 => Ok(ExtendedPoller {
+                cq: self.cq_ex,
+                _phantom: PhantomData,
+            }),
+            err => Err(format!("ibv_start_poll failed, ret={err}")),
+        }
+    }
+}
+
 // generic builder for both cq and cq_ex
 pub struct CompletionQueueBuilder<'res> {
     dev_ctx: &'res DeviceContext,
@@ -131,6 +151,7 @@ impl<'res> CompletionQueueBuilder<'res> {
         self.init_attr.comp_vector = comp_vector;
         self
     }
+
     // TODO(fuji): set various attributes
 
     // build extended cq
@@ -167,3 +188,71 @@ impl<'res> CompletionQueueBuilder<'res> {
 }
 
 // TODO trait for both cq and cq_ex?
+
+pub struct ExtendedWorkCompletion<'cq> {
+    cq: NonNull<ibv_cq_ex>,
+    _phantom: PhantomData<&'cq ()>,
+}
+
+impl<'cq> ExtendedWorkCompletion<'cq> {
+    pub fn wr_id(&self) -> u64 {
+        unsafe { self.cq.as_ref().wr_id }
+    }
+
+    pub fn status(&self) -> u32 {
+        unsafe { self.cq.as_ref().status }
+    }
+
+    pub fn opcode(&self) -> u32 {
+        unsafe { ibv_wc_read_opcode(self.cq.as_ptr()) }
+    }
+
+    pub fn vendor_err(&self) -> u32 {
+        unsafe { ibv_wc_read_vendor_err(self.cq.as_ptr()) }
+    }
+
+    pub fn byte_len(&self) -> u32 {
+        unsafe { ibv_wc_read_byte_len(self.cq.as_ptr()) }
+    }
+
+    pub fn completion_timestamp(&self) -> u64 {
+        unsafe { ibv_wc_read_completion_ts(self.cq.as_ptr()) }
+    }
+}
+
+pub struct ExtendedPoller<'cq> {
+    cq: NonNull<ibv_cq_ex>,
+    _phantom: PhantomData<&'cq ()>,
+}
+
+impl ExtendedPoller<'_> {
+    pub fn iter_mut(&mut self) -> ExtendedWorkCompletion {
+        ExtendedWorkCompletion {
+            cq: self.cq,
+            _phantom: PhantomData,
+        }
+    }
+}
+
+impl<'a> Iterator for ExtendedWorkCompletion<'a> {
+    type Item = ExtendedWorkCompletion<'a>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let ret = unsafe { ibv_next_poll(self.cq.as_ptr()) };
+
+        if ret != 0 {
+            None
+        } else {
+            Some(ExtendedWorkCompletion {
+                cq: self.cq,
+                _phantom: PhantomData,
+            })
+        }
+    }
+}
+
+impl Drop for ExtendedPoller<'_> {
+    fn drop(&mut self) {
+        unsafe { ibv_end_poll(self.cq.as_ptr()) }
+    }
+}
