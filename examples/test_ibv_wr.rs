@@ -28,7 +28,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .setup_max_inline_data(128)
             .setup_send_cq(&sq)
             .setup_recv_cq(&rq)
-            .build()
+            .build_ex()
             .unwrap();
 
         println!("qp pointer is {:?}", qp);
@@ -83,7 +83,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let buf = vec![0, 1, 2, 3];
 
         let write_handle = guard
-            .construct_wr(233, WorkRequestFlags::Signaled)
+            .construct_wr(233, WorkRequestFlags::Signaled | WorkRequestFlags::Inline)
             .setup_write(mr.rkey(), mr.buf.data.as_ptr() as _);
 
         write_handle.setup_inline_data(&buf);
