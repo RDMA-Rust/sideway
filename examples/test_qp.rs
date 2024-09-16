@@ -3,7 +3,7 @@ use sideway::verbs::{
     address::AddressHandleAttribute,
     device,
     device_context::Mtu,
-    queue_pair::{QueuePairAttribute, QueuePairState},
+    queue_pair::{QueuePair, QueuePairAttribute, QueuePairState},
 };
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -12,9 +12,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let ctx = device.open().unwrap();
 
         let pd = ctx.alloc_pd().unwrap();
-        let mr = pd.reg_managed_mr(64).unwrap();
+        let _mr = pd.reg_managed_mr(64).unwrap();
 
-        let comp_channel = ctx.create_comp_channel().unwrap();
+        let _comp_channel = ctx.create_comp_channel().unwrap();
         let mut cq_builder = ctx.create_cq_builder();
         let sq = cq_builder.setup_cqe(128).build().unwrap();
         let rq = cq_builder.setup_cqe(128).build().unwrap();
@@ -36,6 +36,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .setup_port(1)
             .setup_access_flags(ibv_access_flags::IBV_ACCESS_REMOTE_WRITE);
         qp.modify(&attr).unwrap();
+
+        assert_eq!(QueuePairState::Init, qp.state());
 
         // modify QP to RTR state
         let mut attr = QueuePairAttribute::new();
@@ -59,6 +61,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         attr.setup_address_vector(&ah_attr);
         qp.modify(&attr).unwrap();
 
+        assert_eq!(QueuePairState::ReadyToReceive, qp.state());
+
         // modify QP to RTS state
         let mut attr = QueuePairAttribute::new();
         attr.setup_state(QueuePairState::ReadyToSend)
@@ -69,6 +73,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .setup_max_read_atomic(0);
 
         qp.modify(&attr).unwrap();
+
+        assert_eq!(QueuePairState::ReadyToSend, qp.state());
     }
 
     Ok(())
