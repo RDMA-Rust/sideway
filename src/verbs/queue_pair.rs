@@ -1,6 +1,7 @@
+use bitmask_enum::bitmask;
 use lazy_static::lazy_static;
 use rdma_mummy_sys::{
-    ibv_access_flags, ibv_create_qp, ibv_create_qp_ex, ibv_destroy_qp, ibv_modify_qp, ibv_qp, ibv_qp_attr,
+    ibv_create_qp, ibv_create_qp_ex, ibv_destroy_qp, ibv_modify_qp, ibv_qp, ibv_qp_attr, ibv_qp_attr_mask, ibv_qp_cap,
     ibv_qp_attr_mask, ibv_qp_cap, ibv_qp_ex, ibv_qp_init_attr, ibv_qp_init_attr_ex, ibv_qp_state, ibv_qp_type,
     ibv_rx_hash_conf,
 };
@@ -11,11 +12,9 @@ use std::{
     ptr::{null_mut, NonNull},
 };
 
-use bitmask_enum::bitmask;
-
 use super::{
     address::AddressHandleAttribute, completion::CompletionQueue, device_context::Mtu,
-    protection_domain::ProtectionDomain,
+    protection_domain::ProtectionDomain, AccessFlags,
 };
 
 #[repr(u32)]
@@ -462,9 +461,8 @@ impl QueuePairAttribute {
         self
     }
 
-    // TODO(fuji): use ibv_access_flags directly or wrap a type for this?
-    pub fn setup_access_flags(&mut self, access_flags: ibv_access_flags) -> &mut Self {
-        self.attr.qp_access_flags = access_flags.0;
+    pub fn setup_access_flags(&mut self, access_flags: AccessFlags) -> &mut Self {
+        self.attr.qp_access_flags = access_flags.bits as _;
         self.attr_mask |= QueuePairAttributeMask::AccessFlags;
         self
     }

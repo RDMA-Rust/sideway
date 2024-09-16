@@ -1,9 +1,9 @@
-use rdma_mummy_sys::ibv_access_flags;
 use sideway::verbs::{
     address::AddressHandleAttribute,
     device,
     device_context::Mtu,
     queue_pair::{QueuePair, QueuePairAttribute, QueuePairState},
+    AccessFlags,
 };
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -34,7 +34,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         attr.setup_state(QueuePairState::Init)
             .setup_pkey_index(0)
             .setup_port(1)
-            .setup_access_flags(ibv_access_flags::IBV_ACCESS_REMOTE_WRITE);
+            .setup_access_flags(AccessFlags::LocalWrite | AccessFlags::RemoteWrite);
         qp.modify(&attr).unwrap();
 
         assert_eq!(QueuePairState::Init, qp.state());
