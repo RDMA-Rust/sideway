@@ -9,3 +9,15 @@ error[E0499]: cannot borrow `guard` as mutable more than once at a time
 90 |
 91 |             write_handle.setup_inline_data(&buf);
    |             ------------ first borrow later used here
+
+error[E0499]: cannot borrow `guard` as mutable more than once at a time
+   --> tests/post_send_guard/one_guard_has_only_one_handle.rs:159:32
+    |
+154 |             let write_handle = guard
+    |                                ----- first mutable borrow occurs here
+...
+159 |             let _send_handle = guard.construct_wr(2, 0.into()).setup_send();
+    |                                ^^^^^ second mutable borrow occurs here
+160 |
+161 |             write_handle.setup_inline_data(&buf);
+    |             ------------ first borrow later used here
