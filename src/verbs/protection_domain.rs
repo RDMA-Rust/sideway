@@ -7,6 +7,7 @@ use super::{
     device_context::DeviceContext,
     memory_region::{Buffer, MemoryRegion},
     queue_pair::QueuePairBuilder,
+    AccessFlags,
 };
 
 #[derive(Debug)]
@@ -35,7 +36,14 @@ impl ProtectionDomain<'_> {
     pub fn reg_managed_mr(&self, size: usize) -> Result<MemoryRegion, String> {
         let buf = Buffer::from_len_zeroed(size);
 
-        let mr = unsafe { ibv_reg_mr(self.pd.as_ptr(), buf.data.as_ptr() as _, buf.len, 0) };
+        let mr = unsafe {
+            ibv_reg_mr(
+                self.pd.as_ptr(),
+                buf.data.as_ptr() as _,
+                buf.len,
+                (AccessFlags::RemoteWrite | AccessFlags::LocalWrite).into(),
+            )
+        };
 
         if mr.is_null() {
             return Err(format!("{:?}", io::Error::last_os_error()));
