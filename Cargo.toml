@@ -12,7 +12,7 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-rdma-mummy-sys = "0.1"
+rdma-mummy-sys = "0.2"
 tabled = "0.16"
 libc = "0.2"
 os_socketaddr = "0.2"

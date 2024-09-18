@@ -111,10 +111,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // poll for the completion
         {
             let mut poller = sq.start_poll().unwrap();
-            let mut wc = poller.iter_mut();
-            println!("wr_id {}, status: {}, opcode: {}", wc.wr_id(), wc.status(), wc.opcode());
-            assert_eq!(wc.wr_id(), 233);
-            while let Some(wc) = wc.next() {
+            while let Some(wc) = poller.next() {
                 println!("wr_id {}, status: {}, opcode: {}", wc.wr_id(), wc.status(), wc.opcode())
             }
         }
