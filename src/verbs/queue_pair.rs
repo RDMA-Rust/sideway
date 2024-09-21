@@ -571,7 +571,7 @@ impl<'res> QueuePairBuilder<'res> {
     pub fn build_ex(&self) -> Result<ExtendedQueuePair<'res>, String> {
         let mut attr = self.init_attr.clone();
 
-        let qp = unsafe { ibv_create_qp_ex((*(attr.pd)).context, &mut attr).unwrap_or(null_mut()) };
+        let qp = unsafe { ibv_create_qp_ex((*(attr.pd)).context, &mut attr) };
 
         Ok(ExtendedQueuePair {
             qp_ex: NonNull::new(unsafe { ibv_qp_to_qp_ex(qp) })
