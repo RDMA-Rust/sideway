@@ -12,7 +12,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let cq = builder.setup_cqe(128).build().unwrap();
         let cq_ex = builder.setup_cqe(256).build_ex().unwrap();
         println!("comp_channel pointer is {:?}", comp_channel);
-        let comp_cq = builder.setup_comp_channel(&comp_channel, 2).build().unwrap();
+        let comp_cq = builder.setup_comp_channel(&comp_channel, 0).build().unwrap();
         // show that the lifetime of CQ is associated with ctx, not builder
         drop(builder);
         println!("comp_cq pointer is {:?}", comp_cq);

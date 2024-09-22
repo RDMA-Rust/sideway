@@ -1,0 +1,31 @@
+name: test
+
+on:
+  push:
+  pull_request:
+  merge_group:
+
+jobs:
+  test-linux:
+    env:
+      CARGO_TERM_COLOR: always
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository code
+        uses: actions/checkout@v4
+      - name: Install tools required
+        uses: taiki-e/install-action@v2
+        with:
+          tool: just,cargo-nextest,cargo-llvm-cov
+      - name: Run tests
+        run: |
+          cd ${{ github.workspace }}
+          sudo apt install libibverbs1 librdmacm1
+          cargo clippy --all-targets -- -D warnings
+          cargo test
+      - name: Upload coverage information
+        uses: codecov/codecov-action@v4
+        with:
+          fail_ci_if_error: false
+          verbose: true
+          file: coverage/lcov.info
