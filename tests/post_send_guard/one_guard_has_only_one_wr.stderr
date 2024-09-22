@@ -1,0 +1,11 @@
+error[E0499]: cannot borrow `guard` as mutable more than once at a time
+  --> tests/post_send_guard/one_guard_has_only_one_wr.rs:86:25
+   |
+83 |             let wr = guard.construct_wr(233, WorkRequestFlags::Signaled);
+   |                      ----- first mutable borrow occurs here
+...
+86 |             let _wr_2 = guard.construct_wr(2, 0.into());
+   |                         ^^^^^ second mutable borrow occurs here
+87 |
+88 |             let _write_handle = wr.setup_write(mr.rkey(), mr.buf.data.as_ptr() as _);
+   |                                 -- first borrow later used here
