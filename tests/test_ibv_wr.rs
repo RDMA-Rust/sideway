@@ -9,6 +9,8 @@ use sideway::verbs::{
     AccessFlags,
 };
 
+#[test]
+#[allow(clippy::while_let_on_iterator)]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let device_list = device::DeviceList::new()?;
     for device in &device_list {
@@ -104,7 +106,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // it's safe for users to drop the inline buffer after they calling setup inline data
         drop(buf);
 
-        let _err = guard.post().unwrap();
+        guard.post().unwrap();
 
         thread::sleep(time::Duration::from_millis(10));
 

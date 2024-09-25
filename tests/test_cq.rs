@@ -1,5 +1,7 @@
 use sideway::verbs::device;
 
+#[test]
+#[allow(clippy::drop_non_drop)]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let device_list = device::DeviceList::new()?;
     for device in &device_list {

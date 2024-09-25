@@ -1,21 +1,19 @@
-use core::time;
-use std::{io::IoSlice, thread};
-
 use sideway::verbs::{
     address::AddressHandleAttribute,
     device,
     device_context::Mtu,
-    queue_pair::{PostSendGuard, QueuePair, QueuePairAttribute, QueuePairState, SetInlineData, WorkRequestFlags},
+    queue_pair::{QueuePair, QueuePairAttribute, QueuePairState},
     AccessFlags,
 };
 
+#[test]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let device_list = device::DeviceList::new()?;
     for device in &device_list {
         let ctx = device.open().unwrap();
 
         let pd = ctx.alloc_pd().unwrap();
-        let mr = pd.reg_managed_mr(64).unwrap();
+        let _mr = pd.reg_managed_mr(64).unwrap();
 
         let _comp_channel = ctx.create_comp_channel().unwrap();
         let mut cq_builder = ctx.create_cq_builder();
@@ -42,11 +40,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         assert_eq!(QueuePairState::Init, qp.state());
 
-        // modify QP to RTR state, set dest qp as itself
+        // modify QP to RTR state
         let mut attr = QueuePairAttribute::new();
         attr.setup_state(QueuePairState::ReadyToReceive)
             .setup_path_mtu(Mtu::Mtu1024)
-            .setup_dest_qp_num(qp.qp_number())
+            .setup_dest_qp_num(12345)
             .setup_rq_psn(1)
             .setup_max_dest_read_atomic(0)
             .setup_min_rnr_timer(0);
@@ -78,48 +76,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         qp.modify(&attr).unwrap();
 
         assert_eq!(QueuePairState::ReadyToSend, qp.state());
-
-        let mut guard = qp.start_post_send();
-        let buf = vec![0, 1, 2, 3];
-
-        let write_handle = guard
-            .construct_wr(233, WorkRequestFlags::Signaled)
-            .setup_write(mr.rkey(), mr.buf.data.as_ptr() as _);
-
-        write_handle.setup_inline_data(&buf);
-
-        // it's safe for users to drop the inline buffer after they calling setup inline data
-        drop(buf);
-
-        let buf = vec![vec![b'H', b'e', b'l', b'l', b'o'], vec![b'R', b'D', b'M', b'A']];
-
-        let write_handle = unsafe {
-            guard
-                .construct_wr(234, WorkRequestFlags::Signaled | WorkRequestFlags::Inline)
-                .setup_write(mr.rkey(), mr.buf.data.byte_add(4).as_ptr() as _)
-        };
-
-        write_handle.setup_inline_data_list(&[IoSlice::new(buf[0].as_ref()), IoSlice::new(buf[1].as_ref())]);
-
-        // it's safe for users to drop the inline buffer after they calling setup inline data
-        drop(buf);
-
-        let _err = guard.post().unwrap();
-
-        thread::sleep(time::Duration::from_millis(10));
-
-        // poll for the completion
-        {
-            let mut poller = sq.start_poll().unwrap();
-            while let Some(wc) = poller.next() {
-                println!("wr_id {}, status: {}, opcode: {}", wc.wr_id(), wc.status(), wc.opcode())
-            }
-        }
-
-        unsafe {
-            let slice = std::slice::from_raw_parts(mr.buf.data.as_ptr(), mr.buf.len);
-            println!("Buffer contents: {:?}", slice);
-        }
     }
 
     Ok(())
