@@ -91,17 +91,17 @@ impl DeviceContext {
             return Err(format!("Create pd failed! {:?}", io::Error::last_os_error()));
         }
 
-        Ok(ProtectionDomain::new(&self, unsafe {
+        Ok(ProtectionDomain::new(self, unsafe {
             NonNull::new(pd).unwrap_unchecked()
         }))
     }
 
     pub fn create_comp_channel(&self) -> Result<CompletionChannel, String> {
-        CompletionChannel::new(&self)
+        CompletionChannel::new(self)
     }
 
     pub fn create_cq_builder(&self) -> CompletionQueueBuilder {
-        CompletionQueueBuilder::new(&self)
+        CompletionQueueBuilder::new(self)
     }
 
     pub fn query_device(&self) -> Result<DeviceAttr, String> {
@@ -205,7 +205,7 @@ impl DeviceContext {
                     }))
                 }
             } else {
-                return Err(format!("device doesn't have a valid name"));
+                return Err("device doesn't have a valid name".to_string());
             }
         }
 
@@ -215,13 +215,13 @@ impl DeviceContext {
     #[inline]
     pub fn query_gid_table(&self) -> Result<Vec<GidEntry>, String> {
         let dev_attr = self.query_device()?;
-        let size: i32;
+
         let valid_size;
 
         // According to the man page, the gid table entries array should be able
         // to contain all the valid GID. Thus we need to accmulate the gid table
         // len of every port on the device.
-        size = (1..(dev_attr.phys_port_cnt() + 1)).fold(0, |acc, port_num| {
+        let size: i32 = (1..(dev_attr.phys_port_cnt() + 1)).fold(0, |acc, port_num| {
             acc + self.query_port(port_num).unwrap().gid_tbl_len()
         });
 

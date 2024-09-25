@@ -40,9 +40,11 @@ impl<'res> CompletionChannel<'res> {
 }
 
 pub trait CompletionQueue {
-    //! return the basic handle of CQ;
-    //! we mark this method unsafe because the lifetime of ibv_cq is not
-    //! associated with the return value.
+    /// # Safety
+    ///
+    /// return the basic handle of CQ;
+    /// we mark this method unsafe because the lifetime of ibv_cq is not
+    /// associated with the return value.
     unsafe fn cq(&self) -> NonNull<ibv_cq>;
 }
 
@@ -68,7 +70,7 @@ impl CompletionQueue for BasicCompletionQueue<'_> {
 }
 
 impl BasicCompletionQueue<'_> {
-    pub fn start_poll<'cq>(&'cq self) -> Result<BasicPoller<'cq>, String> {
+    pub fn start_poll(&self) -> Result<BasicPoller<'_>, String> {
         let mut cqes = Vec::<ibv_wc>::with_capacity(self.poll_batch.get() as _);
 
         let ret = unsafe {
@@ -81,7 +83,7 @@ impl BasicCompletionQueue<'_> {
 
         unsafe {
             match ret {
-                0 => Err(format!("no valid cqes")),
+                0 => Err("no valid cqes".to_string()),
                 err if err < 0 => Err(format!("ibv_poll_cq failed, ret={err}")),
                 res => Ok(BasicPoller {
                     cq: self.cq(),
@@ -129,7 +131,7 @@ impl CompletionQueue for ExtendedCompletionQueue<'_> {
 }
 
 impl ExtendedCompletionQueue<'_> {
-    pub fn start_poll<'cq>(&'cq self) -> Result<ExtendedPoller<'cq>, String> {
+    pub fn start_poll(&self) -> Result<ExtendedPoller<'_>, String> {
         let ret = unsafe {
             ibv_start_poll(
                 self.cq_ex.as_ptr(),
@@ -200,7 +202,7 @@ impl<'res> CompletionQueueBuilder<'res> {
     // build extended cq
     pub fn build_ex(&self) -> Result<ExtendedCompletionQueue<'res>, String> {
         // create a copy of init_attr since ibv_create_cq_ex requires a mutable pointer to it
-        let mut init_attr = self.init_attr.clone();
+        let mut init_attr = self.init_attr;
 
         let cq_ex = unsafe { ibv_create_cq_ex(self.dev_ctx.context, &mut init_attr as *mut _) };
 

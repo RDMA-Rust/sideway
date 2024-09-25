@@ -9,7 +9,7 @@ use rdma_mummy_sys::{
 use crate::verbs::device_context::DeviceContext;
 
 pub struct Event {
-    event: NonNull<rdma_cm_event>,
+    _event: NonNull<rdma_cm_event>,
 }
 
 pub struct EventChannel {
@@ -48,7 +48,7 @@ impl EventChannel {
         let channel = unsafe { rdma_create_event_channel() };
 
         if channel.is_null() {
-            return Err(format!("Failed to create event channel"));
+            return Err("Failed to create event channel".to_string());
         }
 
         Ok(EventChannel {

@@ -144,6 +144,12 @@ pub struct AddressHandleAttribute {
     pub(crate) attr: ibv_ah_attr,
 }
 
+impl Default for AddressHandleAttribute {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl AddressHandleAttribute {
     pub fn new() -> Self {
         AddressHandleAttribute {
@@ -171,7 +177,7 @@ impl AddressHandleAttribute {
         &mut self, dest_gid: &Gid, flow_label: u32, src_gid_index: u8, hop_limit: u8, traffic_class: u8,
     ) -> &mut Self {
         self.attr.grh = ibv_global_route {
-            dgid: dest_gid.clone().into(),
+            dgid: (*dest_gid).into(),
             flow_label,
             sgid_index: src_gid_index,
             hop_limit,
@@ -182,7 +188,7 @@ impl AddressHandleAttribute {
     }
 
     pub fn setup_grh_dest_gid(&mut self, dest_gid: &Gid) -> &mut Self {
-        self.attr.grh.dgid = dest_gid.clone().into();
+        self.attr.grh.dgid = (*dest_gid).into();
         self.attr.is_global = 1;
         self
     }

@@ -46,7 +46,7 @@ impl Drop for MemoryRegion<'_> {
 }
 
 impl MemoryRegion<'_> {
-    pub(crate) fn new<'pd>(pd: &'pd ProtectionDomain<'pd>, buf: Buffer, mr: NonNull<ibv_mr>) -> MemoryRegion<'pd> {
+    pub(crate) fn new<'pd>(_pd: &'pd ProtectionDomain<'pd>, buf: Buffer, mr: NonNull<ibv_mr>) -> MemoryRegion<'pd> {
         MemoryRegion {
             buf,
             mr,
@@ -55,10 +55,10 @@ impl MemoryRegion<'_> {
     }
 
     pub fn lkey(&self) -> u32 {
-        unsafe { (*self.mr.as_ref()).lkey }
+        unsafe { self.mr.as_ref().lkey }
     }
 
     pub fn rkey(&self) -> u32 {
-        unsafe { (*self.mr.as_ref()).rkey }
+        unsafe { self.mr.as_ref().rkey }
     }
 }
