@@ -61,9 +61,14 @@ impl Gid {
 
         prefix.iter().all(|&x| x == 0) && suffix.iter().all(|&x| x == 0) && aligned.iter().all(|&x| x == 0)
     }
+
+    pub fn is_unicast_link_local(&self) -> bool {
+        self.raw[0] == 0xfe && self.raw[1] & 0xc0 == 0x80
+    }
 }
 
 #[repr(u32)]
+#[derive(PartialEq, Eq)]
 pub enum GidType {
     InfiniBand = IBV_GID_TYPE_IB,
     RoceV1 = IBV_GID_TYPE_ROCE_V1,
