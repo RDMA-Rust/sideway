@@ -1,10 +1,10 @@
 use bitmask_enum::bitmask;
 use lazy_static::lazy_static;
 use rdma_mummy_sys::{
-    ibv_create_qp, ibv_create_qp_ex, ibv_data_buf, ibv_destroy_qp, ibv_modify_qp, ibv_qp, ibv_qp_attr,
+    ibv_create_qp, ibv_create_qp_ex, ibv_data_buf, ibv_destroy_qp, ibv_modify_qp, ibv_post_send, ibv_qp, ibv_qp_attr,
     ibv_qp_attr_mask, ibv_qp_cap, ibv_qp_create_send_ops_flags, ibv_qp_ex, ibv_qp_init_attr, ibv_qp_init_attr_ex,
-    ibv_qp_init_attr_mask, ibv_qp_state, ibv_qp_to_qp_ex, ibv_qp_type, ibv_rx_hash_conf, ibv_send_flags, ibv_wr_abort,
-    ibv_wr_complete, ibv_wr_opcode, ibv_wr_rdma_write, ibv_wr_send, ibv_wr_set_inline_data,
+    ibv_qp_init_attr_mask, ibv_qp_state, ibv_qp_to_qp_ex, ibv_qp_type, ibv_rx_hash_conf, ibv_send_flags, ibv_send_wr,
+    ibv_sge, ibv_wr_abort, ibv_wr_complete, ibv_wr_opcode, ibv_wr_rdma_write, ibv_wr_send, ibv_wr_set_inline_data,
     ibv_wr_set_inline_data_list, ibv_wr_start,
 };
 use std::{
@@ -398,7 +398,13 @@ impl QueuePair for BasicQueuePair<'_> {
     where
         'qp: 'g,
     {
-        todo!()
+        BasicPostSendGuard {
+            qp: self.qp,
+            wrs: Vec::with_capacity(0),
+            sges: Vec::with_capacity(0),
+            inline_buffers: Vec::with_capacity(0),
+            _phantom: PhantomData,
+        }
     }
 }
 
@@ -430,12 +436,10 @@ impl QueuePair for ExtendedQueuePair<'_> {
             ibv_wr_start(self.qp().as_ptr() as _);
         }
 
-        let guard = ExtendedPostSendGuard {
+        ExtendedPostSendGuard {
             qp_ex: Some(self.qp_ex),
             _phantom: PhantomData,
-        };
-
-        guard
+        }
     }
 }
 
@@ -567,7 +571,7 @@ impl<'res> QueuePairBuilder<'res> {
     pub fn build_ex(&self) -> Result<ExtendedQueuePair<'res>, String> {
         let mut attr = self.init_attr.clone();
 
-        let qp = unsafe { ibv_create_qp_ex((*(attr.pd)).context, &mut attr).unwrap_or(null_mut()) };
+        let qp = unsafe { ibv_create_qp_ex((*(attr.pd)).context, &mut attr) };
 
         Ok(ExtendedQueuePair {
             qp_ex: NonNull::new(unsafe { ibv_qp_to_qp_ex(qp) })
@@ -767,34 +771,106 @@ impl<'g, G: PostSendGuard> WorkRequestHandle<'g, G> {
 
 pub struct BasicPostSendGuard<'qp> {
     qp: NonNull<ibv_qp>,
+    wrs: Vec<ibv_send_wr>,
+    sges: Vec<ibv_sge>,
+    inline_buffers: Vec<Vec<u8>>,
     _phantom: PhantomData<&'qp ()>,
 }
 
 impl PostSendGuard for BasicPostSendGuard<'_> {
     fn construct_wr<'qp>(&'qp mut self, wr_id: u64, wr_flags: WorkRequestFlags) -> WorkRequestHandle<'qp, Self> {
-        todo!()
+        self.wrs.push(ibv_send_wr {
+            wr_id,
+            next: null_mut(),
+            sg_list: null_mut(),
+            num_sge: 0,
+            opcode: 0,
+            send_flags: wr_flags.bits,
+            ..unsafe { MaybeUninit::zeroed().assume_init() }
+        });
+
+        WorkRequestHandle { guard: self }
     }
 
-    fn post(self) -> Result<(), String> {
-        todo!()
+    fn post(mut self) -> Result<(), String> {
+        let mut sge_index = 0;
+
+        for i in 0..self.wrs.len() {
+            // Set up the linked list
+            if i < self.wrs.len() - 1 {
+                self.wrs[i].next = &mut self.wrs[i + 1] as *mut _;
+            } else {
+                self.wrs[i].next = null_mut();
+            }
+
+            // Set up the sg_list
+            if self.wrs[i].num_sge > 0 {
+                self.wrs[i].sg_list = &mut self.sges[sge_index] as *mut _;
+                sge_index += self.wrs[i].num_sge as usize;
+            }
+        }
+
+        let mut bad_wr: *mut ibv_send_wr = null_mut();
+        let ret = unsafe { ibv_post_send(self.qp.as_ptr(), self.wrs.as_mut_ptr(), &mut bad_wr) };
+        match ret {
+            0 => Ok(()),
+            err => Err(format!("ibv_post_send failed, ret={err}")),
+        }
     }
 }
 
 impl private_traits::PostSendGuard for BasicPostSendGuard<'_> {
     fn setup_send(&mut self) {
-        todo!()
+        self.wrs.last_mut().unwrap().opcode = WorkRequestOperationType::Send as _;
     }
 
     fn setup_write(&mut self, rkey: u32, remote_addr: u64) {
-        todo!()
+        self.wrs.last_mut().unwrap().opcode = WorkRequestOperationType::Write as _;
+        self.wrs.last_mut().unwrap().wr.rdma.remote_addr = remote_addr;
+        self.wrs.last_mut().unwrap().wr.rdma.rkey = rkey;
     }
 
+    // Memcopy inline buffer manually to make it safe for user to modify / drop
+    // the buffer before calling `ibv_post_send`.
+    //
+    // This should be slower than C implementation, compared to memcopy only once
+    // in `ibv_post_send`, we would do twice. But this would keep our interface
+    // consistent and safe.
     fn setup_inline_data(&mut self, buf: &[u8]) {
-        todo!()
+        self.inline_buffers.push(Vec::from(buf));
+
+        unsafe {
+            self.sges.push(ibv_sge {
+                addr: self.inline_buffers.last().unwrap_unchecked().as_ptr() as u64,
+                length: self.inline_buffers.last().unwrap_unchecked().len() as u32,
+                lkey: 0,
+            });
+        }
+
+        self.wrs.last_mut().unwrap().send_flags |= WorkRequestFlags::Inline.bits;
+        self.wrs.last_mut().unwrap().num_sge += 1;
     }
 
+    // According to the `ibv_wr_set_inline_data_list` implementation in rdma-core,
+    // most providers are just memcopying the list into a continuous buffer and use
+    // a single sge to send it. We just mimic the behavior here.
     fn setup_inline_data_list(&mut self, bufs: &[IoSlice<'_>]) {
-        todo!()
+        self.inline_buffers
+            .push(bufs.iter().fold(Vec::<u8>::new(), |mut res, slice| {
+                res.append(&mut slice.to_vec().clone());
+                res
+            }));
+
+        unsafe {
+            self.sges.push(ibv_sge {
+                addr: self.inline_buffers.last().unwrap_unchecked().as_ptr() as u64,
+                length: self.inline_buffers.last().unwrap_unchecked().len() as u32,
+                lkey: 0,
+            });
+        }
+
+        self.wrs.last_mut().unwrap().send_flags |= WorkRequestFlags::Inline.bits;
+        self.wrs.last_mut().unwrap().num_sge += 1;
     }
 }
 

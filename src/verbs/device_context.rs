@@ -6,8 +6,8 @@ use std::mem::MaybeUninit;
 use std::ptr::{self, NonNull};
 
 use rdma_mummy_sys::{
-    ___ibv_query_port, _ibv_query_gid_table, ibv_alloc_pd, ibv_close_device, ibv_context, ibv_device_attr_ex,
-    ibv_get_device_name, ibv_gid_entry, ibv_mtu, ibv_port_attr, ibv_query_device_ex, ibv_query_gid, ibv_query_gid_type,
+    _ibv_query_gid_table, ibv_alloc_pd, ibv_close_device, ibv_context, ibv_device_attr_ex, ibv_get_device_name,
+    ibv_gid_entry, ibv_mtu, ibv_port_attr, ibv_query_device_ex, ibv_query_gid, ibv_query_gid_type, ibv_query_port,
     IBV_GID_TYPE_IB, IBV_GID_TYPE_ROCE_V1, IBV_GID_TYPE_ROCE_V2, IBV_GID_TYPE_SYSFS_IB_ROCE_V1,
     IBV_GID_TYPE_SYSFS_ROCE_V2, IBV_LINK_LAYER_ETHERNET, IBV_LINK_LAYER_INFINIBAND,
 };
@@ -119,7 +119,7 @@ impl DeviceContext {
     pub fn query_port(&self, port_num: u8) -> Result<PortAttr, String> {
         let mut attr = MaybeUninit::<ibv_port_attr>::uninit();
         unsafe {
-            match ___ibv_query_port(self.context, port_num, attr.as_mut_ptr()) {
+            match ibv_query_port(self.context, port_num, attr.as_mut_ptr()) {
                 0 => Ok(PortAttr {
                     attr: attr.assume_init(),
                 }),
