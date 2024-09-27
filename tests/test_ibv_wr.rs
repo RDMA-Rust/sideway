@@ -2,13 +2,15 @@ use core::time;
 use std::{io::IoSlice, thread};
 
 use sideway::verbs::{
-    address::AddressHandleAttribute,
+    address::{AddressHandleAttribute, GidType},
     device,
     device_context::Mtu,
     queue_pair::{PostSendGuard, QueuePair, QueuePairAttribute, QueuePairState, SetInlineData, WorkRequestFlags},
     AccessFlags,
 };
 
+#[test]
+#[allow(clippy::while_let_on_iterator)]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let device_list = device::DeviceList::new()?;
     for device in &device_list {
@@ -53,13 +55,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // setup address vector
         let mut ah_attr = AddressHandleAttribute::new();
         let gid_entries = ctx.query_gid_table().unwrap();
+        let gid = gid_entries
+            .iter()
+            .find(|&&gid| !gid.gid().is_unicast_link_local() || gid.gid_type() == GidType::RoceV1)
+            .unwrap();
 
         ah_attr
             .setup_dest_lid(1)
             .setup_port(1)
             .setup_service_level(1)
-            .setup_grh_src_gid_index(gid_entries[0].gid_index().try_into().unwrap())
-            .setup_grh_dest_gid(&gid_entries[0].gid())
+            .setup_grh_src_gid_index(gid.gid_index().try_into().unwrap())
+            .setup_grh_dest_gid(&gid.gid())
             .setup_grh_hop_limit(64);
         attr.setup_address_vector(&ah_attr);
         qp.modify(&attr).unwrap();
@@ -104,7 +110,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // it's safe for users to drop the inline buffer after they calling setup inline data
         drop(buf);
 
-        let _err = guard.post().unwrap();
+        guard.post().unwrap();
 
         thread::sleep(time::Duration::from_millis(10));
 

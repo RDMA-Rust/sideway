@@ -25,7 +25,7 @@ impl DeviceList {
         })
     }
 
-    pub fn iter<'list>(&'list self) -> DeviceListIter<'list> {
+    pub fn iter(&self) -> DeviceListIter<'_> {
         DeviceListIter {
             current: 0,
             total: self.num_devices,
@@ -35,6 +35,10 @@ impl DeviceList {
 
     pub fn len(&self) -> usize {
         self.num_devices
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.num_devices != 0
     }
 }
 
@@ -84,7 +88,7 @@ pub struct Device<'list> {
 }
 
 impl Device<'_> {
-    pub fn new<'list>(device: *mut ibv_device, _devices: &'list DeviceList) -> Self {
+    pub fn new(device: *mut ibv_device, _devices: &DeviceList) -> Self {
         Device {
             device,
             _dev_list: PhantomData,

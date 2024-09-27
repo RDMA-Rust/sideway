@@ -1,0 +1,19 @@
+compute_engine_instance:
+  image_project: rocky-linux-cloud
+  image: family/rocky-linux-9
+
+task:
+  env:
+    PATH: /root/.cargo/bin:${PATH}
+
+  prepare_script:
+    - dnf install -y cmake librdmacm libibverbs gcc clang
+    - rdma link add rxe_eth0 type rxe netdev eth0
+  rust_script:
+    - curl https://sh.rustup.rs -sSf --output rustup.sh
+    - sh rustup.sh -y
+    - curl -LsSf https://get.nexte.st/latest/linux | tar zxf - -C ${CARGO_HOME:-~/.cargo}/bin
+  test_script:
+    - cargo build --examples
+    - cargo nextest run
+    - cargo run --example show_gids

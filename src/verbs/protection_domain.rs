@@ -25,7 +25,7 @@ impl Drop for ProtectionDomain<'_> {
 }
 
 impl ProtectionDomain<'_> {
-    pub(crate) fn new<'ctx>(_ctx: &'ctx DeviceContext, pd: NonNull<ibv_pd>) -> Self {
+    pub(crate) fn new(_ctx: &DeviceContext, pd: NonNull<ibv_pd>) -> Self {
         ProtectionDomain {
             // This should not fail as the caller ensures pd is not NULL
             pd,

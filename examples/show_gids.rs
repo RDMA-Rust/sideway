@@ -30,7 +30,7 @@ struct GidEntries {
 fn display_ipv4(ipv4: &Option<Ipv4Addr>) -> String {
     match ipv4 {
         Some(addr) => format!("{addr}"),
-        None => format!(""),
+        None => String::new(),
     }
 }
 

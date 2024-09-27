@@ -130,9 +130,11 @@ pub enum WorkRequestFlags {
 
 #[allow(private_bounds)]
 pub trait QueuePair {
-    //! return the basic handle of QP;
-    //! we mark this method unsafe because the lifetime of ibv_qp is not
-    //! associated with the return value.
+    /// # Safety
+    ///
+    /// return the basic handle of QP;
+    /// we mark this method unsafe because the lifetime of ibv_qp is not
+    /// associated with the return value.
     unsafe fn qp(&self) -> NonNull<ibv_qp>;
 
     fn modify(&mut self, attr: &QueuePairAttribute) -> Result<(), String> {
@@ -199,7 +201,7 @@ mod private_traits {
 
 pub trait PostSendGuard: private_traits::PostSendGuard {
     // every qp should hold only one WorkRequestHandle at the same time
-    fn construct_wr<'g>(&'g mut self, wr_id: u64, wr_flags: WorkRequestFlags) -> WorkRequestHandle<'g, Self>;
+    fn construct_wr(&mut self, wr_id: u64, wr_flags: WorkRequestFlags) -> WorkRequestHandle<'_, Self>;
 
     fn post(self) -> Result<(), String>;
 }
@@ -569,7 +571,7 @@ impl<'res> QueuePairBuilder<'res> {
 
     // build extended qp
     pub fn build_ex(&self) -> Result<ExtendedQueuePair<'res>, String> {
-        let mut attr = self.init_attr.clone();
+        let mut attr = self.init_attr;
 
         let qp = unsafe { ibv_create_qp_ex((*(attr.pd)).context, &mut attr) };
 
@@ -584,6 +586,12 @@ impl<'res> QueuePairBuilder<'res> {
 pub struct QueuePairAttribute {
     attr: ibv_qp_attr,
     attr_mask: QueuePairAttributeMask,
+}
+
+impl Default for QueuePairAttribute {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl QueuePairAttribute {
@@ -689,7 +697,7 @@ impl QueuePairAttribute {
     }
 
     pub fn setup_address_vector(&mut self, ah_attr: &AddressHandleAttribute) -> &mut Self {
-        self.attr.ah_attr = ah_attr.attr.clone();
+        self.attr.ah_attr = ah_attr.attr;
         self.attr_mask |= QueuePairAttributeMask::AddressVector;
         self
     }
@@ -734,13 +742,13 @@ pub struct WorkRequestHandle<'g, G: PostSendGuard + ?Sized> {
 pub trait SetSge {}
 
 pub trait SetInlineData {
-    fn setup_inline_data<'qp>(self, buf: &[u8]);
+    fn setup_inline_data(self, buf: &[u8]);
 
-    fn setup_inline_data_list<'qp>(self, bufs: &[IoSlice<'_>]);
+    fn setup_inline_data_list(self, bufs: &[IoSlice<'_>]);
 }
 
 pub struct SendHandle<'g, G: PostSendGuard> {
-    guard: &'g mut G,
+    _guard: &'g mut G,
 }
 
 pub struct WriteHandle<'g, G: PostSendGuard> {
@@ -760,7 +768,7 @@ impl<'g, G: PostSendGuard> SetInlineData for WriteHandle<'g, G> {
 impl<'g, G: PostSendGuard> WorkRequestHandle<'g, G> {
     pub fn setup_send(self) -> SendHandle<'g, G> {
         self.guard.setup_send();
-        SendHandle { guard: self.guard }
+        SendHandle { _guard: self.guard }
     }
 
     pub fn setup_write(self, rkey: u32, remote_addr: u64) -> WriteHandle<'g, G> {
@@ -778,7 +786,7 @@ pub struct BasicPostSendGuard<'qp> {
 }
 
 impl PostSendGuard for BasicPostSendGuard<'_> {
-    fn construct_wr<'qp>(&'qp mut self, wr_id: u64, wr_flags: WorkRequestFlags) -> WorkRequestHandle<'qp, Self> {
+    fn construct_wr(&mut self, wr_id: u64, wr_flags: WorkRequestFlags) -> WorkRequestHandle<'_, Self> {
         self.wrs.push(ibv_send_wr {
             wr_id,
             next: null_mut(),
@@ -880,7 +888,7 @@ pub struct ExtendedPostSendGuard<'qp> {
 }
 
 impl PostSendGuard for ExtendedPostSendGuard<'_> {
-    fn construct_wr<'qp>(&'qp mut self, wr_id: u64, wr_flags: WorkRequestFlags) -> WorkRequestHandle<'qp, Self> {
+    fn construct_wr(&mut self, wr_id: u64, wr_flags: WorkRequestFlags) -> WorkRequestHandle<'_, Self> {
         unsafe {
             self.qp_ex.unwrap_unchecked().as_mut().wr_id = wr_id;
             self.qp_ex.unwrap_unchecked().as_mut().wr_flags = wr_flags.bits;
@@ -937,11 +945,10 @@ impl private_traits::PostSendGuard for ExtendedPostSendGuard<'_> {
 
 impl Drop for ExtendedPostSendGuard<'_> {
     fn drop(&mut self) {
-        match self.qp_ex {
-            Some(qp_ex) => unsafe {
+        if let Some(qp_ex) = self.qp_ex {
+            unsafe {
                 ibv_wr_abort(qp_ex.as_ptr());
-            },
-            None => (),
+            }
         }
     }
 }
