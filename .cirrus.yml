@@ -5,6 +5,7 @@ compute_engine_instance:
 task:
   env:
     PATH: /root/.cargo/bin:${PATH}
+    CODECOV_TOKEN: ENCRYPTED[5608a167c2ad93fcac429e78e49661525794539aad86af2553c6eb0d1f3dd583f75a9bb4a2864d761bb336f8eec5c68d]
 
   prepare_script:
     - dnf install -y cmake librdmacm libibverbs gcc clang
@@ -13,7 +14,12 @@ task:
     - curl https://sh.rustup.rs -sSf --output rustup.sh
     - sh rustup.sh -y
     - curl -LsSf https://get.nexte.st/latest/linux | tar zxf - -C ${CARGO_HOME:-~/.cargo}/bin
+    - curl --proto '=https' --tlsv1.2 -sSf https://just.systems/install.sh | bash -s -- --to ${CARGO_HOME:-~/.cargo}/bin
+    - cargo install cargo-llvm-cov
+  codecov_script:
+    - curl -Os https://cli.codecov.io/latest/linux/codecov
+    - chmod +x codecov
   test_script:
-    - cargo build --examples
-    - cargo nextest run
-    - cargo run --example show_gids
+    - just test-all-with-cov
+    - sed -i 's#/tmp/cirrus-ci-build/##g' lcov.info
+    - ./codecov --verbose upload-process --disable-search --fail-on-error -t $CODECOV_TOKEN --git-service github -f ./lcov.info
