@@ -73,6 +73,10 @@ impl DeviceAttr {
     pub fn phys_port_cnt(&self) -> u8 {
         self.attr.orig_attr.phys_port_cnt
     }
+
+    pub fn completion_timestamp_mask(&self) -> u64 {
+        self.attr.completion_timestamp_mask
+    }
 }
 
 impl Drop for DeviceContext {
