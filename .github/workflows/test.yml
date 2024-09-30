@@ -23,9 +23,13 @@ jobs:
           sudo apt install libibverbs1 librdmacm1
           cargo clippy --all-targets -- -D warnings
           cargo test
+      - name: Get coverage info
+        run: |
+          just test-all-with-cov
       - name: Upload coverage information
         uses: codecov/codecov-action@v4
         with:
           fail_ci_if_error: false
+          token: ${{ secrets.CODECOV_TOKEN }}
           verbose: true
-          file: coverage/lcov.info
+          file: lcov.info

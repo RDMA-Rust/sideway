@@ -2,11 +2,12 @@ use libc::IF_NAMESIZE;
 use rdma_mummy_sys::{
     ibv_ah_attr, ibv_gid, ibv_gid_entry, ibv_global_route, IBV_GID_TYPE_IB, IBV_GID_TYPE_ROCE_V1, IBV_GID_TYPE_ROCE_V2,
 };
+use serde::{Deserialize, Serialize};
 use std::ffi::CStr;
 use std::io;
 use std::{fmt, mem::MaybeUninit, net::Ipv6Addr};
 
-#[derive(Default, Clone, Copy, Debug)]
+#[derive(Default, Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Gid {
     pub raw: [u8; 16],
 }
@@ -68,7 +69,7 @@ impl Gid {
 }
 
 #[repr(u32)]
-#[derive(PartialEq, Eq)]
+#[derive(PartialEq, Eq, Debug)]
 pub enum GidType {
     InfiniBand = IBV_GID_TYPE_IB,
     RoceV1 = IBV_GID_TYPE_ROCE_V1,
@@ -208,5 +209,36 @@ impl AddressHandleAttribute {
         self.attr.grh.hop_limit = hop_limit;
         self.attr.is_global = 1;
         self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::verbs::address::Gid;
+    use rdma_mummy_sys::ibv_gid;
+    use rstest::rstest;
+    use std::net::Ipv6Addr;
+    use std::str::FromStr;
+
+    #[rstest]
+    #[case("fe80::", true)]
+    #[case("fe80::1", true)]
+    #[case("fd80::1", false)]
+    #[case("2001:dead:beef:dead:beef:dead:beef:dead", false)]
+    fn test_link_local_gid(#[case] ip_str: &str, #[case] expected: bool) {
+        let ip = Ipv6Addr::from_str(ip_str).unwrap();
+
+        let gid: Gid = ip.into();
+
+        assert_eq!(expected, gid.is_unicast_link_local())
+    }
+
+    #[rstest]
+    #[case([0xfe, 0x80, 0xde, 0xad, 0xbe, 0xef, 0xde, 0xad, 0xbe, 0xef, 0xde, 0xad, 0xbe, 0xef, 0xde, 0xad], "fe80:dead:beef:dead:beef:dead:beef:dead")]
+    #[case([0xfe, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00], "fe80:0000:0000:0000:0000:0000:0000:0000")]
+    fn test_from_ibv_gid(#[case] octets: [u8; 16], #[case] expected: &str) {
+        let gid_ = ibv_gid { raw: octets };
+        let gid = Gid::from(gid_);
+        assert_eq!(format!("{gid}"), expected);
     }
 }

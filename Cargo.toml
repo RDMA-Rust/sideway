@@ -3,6 +3,9 @@ name = "sideway"
 version = "0.1.1"
 description = "A better wrapper for using RDMA programming APIs in Rust flavor"
 license= "MPL-2.0"
+repository = "https://github.com/RDMA-Rust/sideway"
+readme = "README.md"
+keywords = ["RDMA", "verbs", "cm", "libibverbs", "librdmacm"]
 authors = [
     "Luke Yue <lukedyue@gmail.com>",
     "FujiZ <i@fujiz.me>",
@@ -18,6 +21,8 @@ libc = "0.2"
 os_socketaddr = "0.2"
 bitmask-enum = "2.2"
 lazy_static = "1.5.0"
+serde = { version = "1.0", features = ["derive"] }
 
 [dev-dependencies]
 trybuild = "1.0"
+rstest = "0.22"
