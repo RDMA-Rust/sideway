@@ -25,4 +25,11 @@ serde = { version = "1.0", features = ["derive"] }
 
 [dev-dependencies]
 trybuild = "1.0"
-rstest = "0.22"
+rstest = "0.23"
+clap = { version = "4.5", features = ["derive"] }
+rand = "0.8"
+postcard = { version = "1.0", features = ["alloc"] }
+quanta = "0.12"
+byte-unit = "5.1"
+ouroboros = "0.18"
+proptest = "1.5"
