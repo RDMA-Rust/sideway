@@ -1,11 +1,12 @@
 use bitmask_enum::bitmask;
 use lazy_static::lazy_static;
 use rdma_mummy_sys::{
-    ibv_create_qp, ibv_create_qp_ex, ibv_data_buf, ibv_destroy_qp, ibv_modify_qp, ibv_post_send, ibv_qp, ibv_qp_attr,
-    ibv_qp_attr_mask, ibv_qp_cap, ibv_qp_create_send_ops_flags, ibv_qp_ex, ibv_qp_init_attr, ibv_qp_init_attr_ex,
-    ibv_qp_init_attr_mask, ibv_qp_state, ibv_qp_to_qp_ex, ibv_qp_type, ibv_rx_hash_conf, ibv_send_flags, ibv_send_wr,
-    ibv_sge, ibv_wr_abort, ibv_wr_complete, ibv_wr_opcode, ibv_wr_rdma_write, ibv_wr_send, ibv_wr_set_inline_data,
-    ibv_wr_set_inline_data_list, ibv_wr_start,
+    ibv_create_qp, ibv_create_qp_ex, ibv_data_buf, ibv_destroy_qp, ibv_modify_qp, ibv_post_recv, ibv_post_send, ibv_qp,
+    ibv_qp_attr, ibv_qp_attr_mask, ibv_qp_cap, ibv_qp_create_send_ops_flags, ibv_qp_ex, ibv_qp_init_attr,
+    ibv_qp_init_attr_ex, ibv_qp_init_attr_mask, ibv_qp_state, ibv_qp_to_qp_ex, ibv_qp_type, ibv_recv_wr,
+    ibv_rx_hash_conf, ibv_send_flags, ibv_send_wr, ibv_sge, ibv_wr_abort, ibv_wr_complete, ibv_wr_opcode,
+    ibv_wr_rdma_write, ibv_wr_send, ibv_wr_set_inline_data, ibv_wr_set_inline_data_list, ibv_wr_set_sge,
+    ibv_wr_set_sge_list, ibv_wr_start,
 };
 use std::{
     io::{self, IoSlice},
@@ -176,13 +177,22 @@ pub trait QueuePair {
     type Guard<'g>: PostSendGuard
     where
         Self: 'g;
-    fn start_post_send<'qp, 'g>(&'qp mut self) -> Self::Guard<'g>
-    where
-        'qp: 'g;
+    fn start_post_send(&mut self) -> Self::Guard<'_>;
+
+    fn start_post_recv(&mut self) -> PostRecvGuard<'_> {
+        PostRecvGuard {
+            qp: unsafe { self.qp() },
+            wrs: Vec::new(),
+            sges: Vec::new(),
+            _phantom: PhantomData,
+        }
+    }
 }
 
 mod private_traits {
     use std::io::IoSlice;
+
+    use rdma_mummy_sys::ibv_sge;
     // This is the private part of PostSendGuard, which is a workaround for pub trait
     // not being able to have private functions.
     //
@@ -196,6 +206,10 @@ mod private_traits {
         fn setup_inline_data(&mut self, buf: &[u8]);
 
         fn setup_inline_data_list(&mut self, bufs: &[IoSlice<'_>]);
+
+        unsafe fn setup_sge(&mut self, lkey: u32, addr: u64, length: u32);
+
+        unsafe fn setup_sge_list(&mut self, sg_list: &[ibv_sge]);
     }
 }
 
@@ -396,10 +410,7 @@ impl QueuePair for BasicQueuePair<'_> {
     }
 
     type Guard<'g> = BasicPostSendGuard<'g> where Self: 'g;
-    fn start_post_send<'qp, 'g>(&'qp mut self) -> Self::Guard<'g>
-    where
-        'qp: 'g,
-    {
+    fn start_post_send(&mut self) -> Self::Guard<'_> {
         BasicPostSendGuard {
             qp: self.qp,
             wrs: Vec::with_capacity(0),
@@ -430,10 +441,7 @@ impl QueuePair for ExtendedQueuePair<'_> {
     }
 
     type Guard<'g> = ExtendedPostSendGuard<'g> where Self: 'g;
-    fn start_post_send<'qp, 'g>(&'qp mut self) -> Self::Guard<'g>
-    where
-        'qp: 'g,
-    {
+    fn start_post_send(&mut self) -> Self::Guard<'_> {
         unsafe {
             ibv_wr_start(self.qp().as_ptr() as _);
         }
@@ -739,7 +747,18 @@ pub struct WorkRequestHandle<'g, G: PostSendGuard + ?Sized> {
     guard: &'g mut G,
 }
 
-pub trait SetSge {}
+pub trait SetScatterGatherEntry {
+    /// # Safety
+    ///
+    /// set a local buffer to the request; note that the lifetime of the buffer 
+    /// associated with the sge is managed by the caller.
+    unsafe fn setup_sge(self, lkey: u32, addr: u64, length: u32);
+    /// # Safety
+    ///
+    /// set a list of local buffers to the request; note that the lifetime of 
+    /// the buffer associated with the sge is managed by the caller.
+    unsafe fn setup_sge_list(self, sg_list: &[ibv_sge]);
+}
 
 pub trait SetInlineData {
     fn setup_inline_data(self, buf: &[u8]);
@@ -747,15 +766,12 @@ pub trait SetInlineData {
     fn setup_inline_data_list(self, bufs: &[IoSlice<'_>]);
 }
 
-pub struct SendHandle<'g, G: PostSendGuard> {
-    _guard: &'g mut G,
-}
-
-pub struct WriteHandle<'g, G: PostSendGuard> {
+// handle to set local buffer for SEND & WRITE request
+pub struct LocalBufferHandle<'g, G: PostSendGuard> {
     guard: &'g mut G,
 }
 
-impl<'g, G: PostSendGuard> SetInlineData for WriteHandle<'g, G> {
+impl<'g, G: PostSendGuard> SetInlineData for LocalBufferHandle<'g, G> {
     fn setup_inline_data(self, buf: &[u8]) {
         self.guard.setup_inline_data(buf);
     }
@@ -765,15 +781,25 @@ impl<'g, G: PostSendGuard> SetInlineData for WriteHandle<'g, G> {
     }
 }
 
-impl<'g, G: PostSendGuard> WorkRequestHandle<'g, G> {
-    pub fn setup_send(self) -> SendHandle<'g, G> {
-        self.guard.setup_send();
-        SendHandle { _guard: self.guard }
+impl<'g, G: PostSendGuard> SetScatterGatherEntry for LocalBufferHandle<'g, G> {
+    unsafe fn setup_sge(self, lkey: u32, addr: u64, length: u32) {
+        self.guard.setup_sge(lkey, addr, length);
     }
 
-    pub fn setup_write(self, rkey: u32, remote_addr: u64) -> WriteHandle<'g, G> {
+    unsafe fn setup_sge_list(self, sg_list: &[ibv_sge]) {
+        self.guard.setup_sge_list(sg_list);
+    }
+}
+
+impl<'g, G: PostSendGuard> WorkRequestHandle<'g, G> {
+    pub fn setup_send(self) -> LocalBufferHandle<'g, G> {
+        self.guard.setup_send();
+        LocalBufferHandle { guard: self.guard }
+    }
+
+    pub fn setup_write(self, rkey: u32, remote_addr: u64) -> LocalBufferHandle<'g, G> {
         self.guard.setup_write(rkey, remote_addr);
-        WriteHandle { guard: self.guard }
+        LocalBufferHandle { guard: self.guard }
     }
 }
 
@@ -880,6 +906,16 @@ impl private_traits::PostSendGuard for BasicPostSendGuard<'_> {
         self.wrs.last_mut().unwrap().send_flags |= WorkRequestFlags::Inline.bits;
         self.wrs.last_mut().unwrap().num_sge += 1;
     }
+
+    unsafe fn setup_sge(&mut self, lkey: u32, addr: u64, length: u32) {
+        self.sges.push(ibv_sge { addr, length, lkey });
+        self.wrs.last_mut().unwrap_unchecked().num_sge = 1;
+    }
+
+    unsafe fn setup_sge_list(&mut self, sg_list: &[ibv_sge]) {
+        self.sges.extend_from_slice(sg_list);
+        self.wrs.last_mut().unwrap_unchecked().num_sge = sg_list.len() as _;
+    }
 }
 
 pub struct ExtendedPostSendGuard<'qp> {
@@ -941,6 +977,14 @@ impl private_traits::PostSendGuard for ExtendedPostSendGuard<'_> {
             );
         }
     }
+
+    unsafe fn setup_sge(&mut self, lkey: u32, addr: u64, length: u32) {
+        ibv_wr_set_sge(self.qp_ex.unwrap_unchecked().as_ptr(), lkey, addr, length);
+    }
+
+    unsafe fn setup_sge_list(&mut self, sg_list: &[ibv_sge]) {
+        ibv_wr_set_sge_list(self.qp_ex.unwrap_unchecked().as_ptr(), sg_list.len(), sg_list.as_ptr());
+    }
 }
 
 impl Drop for ExtendedPostSendGuard<'_> {
@@ -950,5 +994,69 @@ impl Drop for ExtendedPostSendGuard<'_> {
                 ibv_wr_abort(qp_ex.as_ptr());
             }
         }
+    }
+}
+
+pub struct PostRecvGuard<'qp> {
+    qp: NonNull<ibv_qp>,
+    wrs: Vec<ibv_recv_wr>,
+    sges: Vec<ibv_sge>,
+    _phantom: PhantomData<&'qp ()>,
+}
+
+impl<'qp> PostRecvGuard<'qp> {
+    pub fn construct_wr<'g>(&'g mut self, wr_id: u64) -> RecvWorkRequestHandle<'g, 'qp> {
+        self.wrs.push(ibv_recv_wr {
+            wr_id,
+            next: null_mut(),
+            sg_list: null_mut(),
+            num_sge: 0,
+        });
+
+        RecvWorkRequestHandle { guard: self }
+    }
+
+    pub fn post(mut self) -> Result<(), String> {
+        let mut sge_index = 0;
+
+        for i in 0..self.wrs.len() {
+            // Set up the linked list
+            if i < self.wrs.len() - 1 {
+                self.wrs[i].next = &mut self.wrs[i + 1] as *mut _;
+            } else {
+                self.wrs[i].next = null_mut();
+            }
+
+            // Set up the sg_list
+            if self.wrs[i].num_sge > 0 {
+                self.wrs[i].sg_list = &mut self.sges[sge_index] as *mut _;
+                sge_index += self.wrs[i].num_sge as usize;
+            }
+        }
+
+        let mut bad_wr: *mut ibv_recv_wr = null_mut();
+        let ret = unsafe { ibv_post_recv(self.qp.as_ptr(), self.wrs.as_mut_ptr(), &mut bad_wr) };
+        match ret {
+            0 => Ok(()),
+            err => Err(format!("ibv_post_recv failed, ret={err}")),
+        }
+    }
+}
+
+pub struct RecvWorkRequestHandle<'g, 'qp> {
+    guard: &'g mut PostRecvGuard<'qp>,
+}
+
+impl SetScatterGatherEntry for RecvWorkRequestHandle<'_, '_> {
+    unsafe fn setup_sge(self, lkey: u32, addr: u64, length: u32) {
+        assert!(!self.guard.wrs.is_empty());
+        self.guard.wrs.last_mut().unwrap_unchecked().num_sge = 1;
+        self.guard.sges.push(ibv_sge { addr, length, lkey });
+    }
+
+    unsafe fn setup_sge_list(self, sg_list: &[ibv_sge]) {
+        assert!(!self.guard.wrs.is_empty());
+        self.guard.wrs.last_mut().unwrap_unchecked().num_sge = sg_list.len() as _;
+        self.guard.sges.extend_from_slice(sg_list);
     }
 }
