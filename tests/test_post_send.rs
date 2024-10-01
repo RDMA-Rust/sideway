@@ -5,7 +5,10 @@ use sideway::verbs::{
     address::{AddressHandleAttribute, GidType},
     device,
     device_context::Mtu,
-    queue_pair::{PostSendGuard, QueuePair, QueuePairAttribute, QueuePairState, SetInlineData, WorkRequestFlags},
+    queue_pair::{
+        PostSendGuard, QueuePair, QueuePairAttribute, QueuePairState, SetInlineData, SetScatterGatherEntry,
+        WorkRequestFlags,
+    },
     AccessFlags,
 };
 
@@ -18,6 +21,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         let pd = ctx.alloc_pd().unwrap();
         let mr = pd.reg_managed_mr(64).unwrap();
+        let recv_mr = pd.reg_managed_mr(64).unwrap();
 
         let _comp_channel = ctx.create_comp_channel().unwrap();
         let mut cq_builder = ctx.create_cq_builder();
@@ -85,6 +89,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         assert_eq!(QueuePairState::ReadyToSend, qp.state());
 
+        // post one recv buf to the qp
+        let mut guard = qp.start_post_recv();
+        let recv_handle = guard.construct_wr(114514);
+        unsafe { recv_handle.setup_sge(recv_mr.lkey(), recv_mr.buf.data.as_ptr() as _, recv_mr.buf.len as _) };
+        guard.post().unwrap();
+
         let mut guard = qp.start_post_send();
         let buf = vec![0, 1, 2, 3];
 
@@ -101,11 +111,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         let write_handle = unsafe {
             guard
-                .construct_wr(234, WorkRequestFlags::Signaled | WorkRequestFlags::Inline)
+                .construct_wr(234, WorkRequestFlags::Signaled)
                 .setup_write(mr.rkey(), mr.buf.data.byte_add(4).as_ptr() as _)
         };
 
         write_handle.setup_inline_data_list(&[IoSlice::new(buf[0].as_ref()), IoSlice::new(buf[1].as_ref())]);
+
+        // use SEND to transmit the same data
+        let send_handle = guard.construct_wr(567, WorkRequestFlags::Signaled).setup_send();
+        send_handle.setup_inline_data_list(&[IoSlice::new(buf[0].as_ref()), IoSlice::new(buf[1].as_ref())]);
 
         // it's safe for users to drop the inline buffer after they calling setup inline data
         drop(buf);
@@ -114,7 +128,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         thread::sleep(time::Duration::from_millis(10));
 
-        // poll for the completion
+        // poll send CQ for the completion
         {
             let mut poller = sq.start_poll().unwrap();
             while let Some(wc) = poller.next() {
@@ -125,6 +139,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         unsafe {
             let slice = std::slice::from_raw_parts(mr.buf.data.as_ptr(), mr.buf.len);
             println!("Buffer contents: {:?}", slice);
+        }
+
+        // poll recv CQ for the completion
+        {
+            let mut poller = rq.start_poll().unwrap();
+            while let Some(wc) = poller.next() {
+                println!("wr_id {}, status: {}, opcode: {}", wc.wr_id(), wc.status(), wc.opcode())
+            }
+        }
+
+        unsafe {
+            let slice = std::slice::from_raw_parts(recv_mr.buf.data.as_ptr(), recv_mr.buf.len);
+            println!("Recv Buffer contents: {:?}", slice);
         }
     }
 
