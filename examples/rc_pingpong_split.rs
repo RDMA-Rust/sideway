@@ -39,8 +39,8 @@ use sideway::verbs::device_context::{DeviceContext, Mtu};
 use sideway::verbs::memory_region::MemoryRegion;
 use sideway::verbs::protection_domain::ProtectionDomain;
 use sideway::verbs::queue_pair::{
-    ExtendedQueuePair, PostSendGuard, QueuePair, QueuePairAttribute, QueuePairState, SetScatterGatherEntry,
-    WorkRequestFlags,
+    ExtendedQueuePair, PostSendError, PostSendGuard, QueuePair, QueuePairAttribute, QueuePairState,
+    SetScatterGatherEntry, WorkRequestFlags,
 };
 use sideway::verbs::AccessFlags;
 
@@ -140,7 +140,7 @@ struct PingPongContext {
 }
 
 impl PingPongContext {
-    fn build(device: &Device, size: u32, rx_depth: u32, ib_port: u8, use_ts: bool) -> Result<PingPongContext, String> {
+    fn build(device: &Device, size: u32, rx_depth: u32, ib_port: u8, use_ts: bool) -> anyhow::Result<PingPongContext> {
         let context = device
             .open()
             .unwrap_or_else(|_| panic!("Couldn't get context for {}", device.name().unwrap()));
@@ -232,7 +232,7 @@ impl PingPongContext {
         Ok(())
     }
 
-    fn post_send(&mut self) -> Result<(), String> {
+    fn post_send(&mut self) -> Result<(), PostSendError> {
         let (mut guard, lkey, ptr, size) = self.with_mut(|fields| {
             (
                 fields.qp.start_post_send(),
@@ -253,7 +253,7 @@ impl PingPongContext {
 
     fn connect(
         &mut self, remote_context: &PingPongDestination, ib_port: u8, psn: u32, mtu: Mtu, sl: u8, gid_idx: u8,
-    ) -> Result<(), String> {
+    ) -> anyhow::Result<()> {
         let mut attr = QueuePairAttribute::new();
         attr.setup_state(QueuePairState::ReadyToReceive)
             .setup_path_mtu(mtu)
@@ -362,7 +362,7 @@ struct TimeStamps {
 }
 
 #[allow(clippy::while_let_on_iterator)]
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> anyhow::Result<()> {
     let args = Args::parse();
     let mut scnt: u32 = 0;
     let mut rcnt: u32 = 0;
@@ -386,7 +386,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         None => device_list.iter().next().expect("No IB device found"),
     };
 
-    let mut ctx = PingPongContext::build(&device, args.size, rx_depth, args.ib_port, args.ts).unwrap();
+    let mut ctx = PingPongContext::build(&device, args.size, rx_depth, args.ib_port, args.ts)?;
 
     let gid = ctx.borrow_ctx().query_gid(args.ib_port, args.gid_idx.into()).unwrap();
     let psn = rand::random::<u32>() & 0xFFFFFF;
@@ -448,15 +448,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         remote_context.qp_number, remote_context.packet_seq_number, remote_context.gid
     );
 
-    ctx.connect(&remote_context, args.ib_port, psn, args.mtu.0, args.sl, args.gid_idx)
-        .unwrap();
+    ctx.connect(&remote_context, args.ib_port, psn, args.mtu.0, args.sl, args.gid_idx)?;
 
     let clock = quanta::Clock::new();
     let start_time = clock.now();
     let mut outstanding_send = false;
 
     if args.server_ip.is_some() {
-        ctx.post_send().unwrap();
+        ctx.post_send()?;
         outstanding_send = true;
     }
     // poll for the completion
@@ -502,7 +501,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
 
             if need_post_send {
-                ctx.post_send().unwrap();
+                ctx.post_send()?;
             }
 
             // Check if we're done
