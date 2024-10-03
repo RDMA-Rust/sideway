@@ -115,7 +115,7 @@ struct TimeStamps {
 }
 
 #[allow(clippy::while_let_on_iterator)]
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> anyhow::Result<()> {
     let args = Args::parse();
     let mut scnt: u32 = 0;
     let mut rcnt: u32 = 0;
@@ -192,7 +192,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .setup_pkey_index(0)
         .setup_port(args.ib_port)
         .setup_access_flags(AccessFlags::LocalWrite | AccessFlags::RemoteWrite);
-    qp.modify(&attr).unwrap();
+    qp.modify(&attr)?;
 
     for _i in 0..rx_depth {
         let mut guard = qp.start_post_recv();
@@ -278,7 +278,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .setup_grh_dest_gid(&remote_context.gid)
         .setup_grh_hop_limit(1);
     attr.setup_address_vector(&ah_attr);
-    qp.modify(&attr).unwrap();
+    qp.modify(&attr)?;
 
     let mut attr = QueuePairAttribute::new();
     attr.setup_state(QueuePairState::ReadyToSend)
@@ -288,7 +288,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .setup_rnr_retry(7)
         .setup_max_read_atomic(0);
 
-    qp.modify(&attr).unwrap();
+    qp.modify(&attr)?;
 
     let clock = quanta::Clock::new();
     let start_time = clock.now();
@@ -303,7 +303,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             send_handle.setup_sge(send_mr.lkey(), send_mr.buf.data.as_ptr() as _, send_mr.buf.len as _);
         }
 
-        guard.post().unwrap();
+        guard.post()?;
         outstanding_send = true;
     }
     // poll for the completion
@@ -388,7 +388,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     send_mr.buf.len as _,
                                 );
                             }
-                            guard.post().unwrap();
+                            guard.post()?;
                             outstanding_send = true;
                         }
                     }
