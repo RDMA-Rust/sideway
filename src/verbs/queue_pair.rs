@@ -1,5 +1,4 @@
 use bitmask_enum::bitmask;
-use lazy_static::lazy_static;
 use rdma_mummy_sys::{
     ibv_create_qp, ibv_create_qp_ex, ibv_data_buf, ibv_destroy_qp, ibv_modify_qp, ibv_post_recv, ibv_post_send, ibv_qp,
     ibv_qp_attr, ibv_qp_attr_mask, ibv_qp_cap, ibv_qp_create_send_ops_flags, ibv_qp_ex, ibv_qp_init_attr,
@@ -19,6 +18,62 @@ use super::{
     address::AddressHandleAttribute, completion::CompletionQueue, device_context::Mtu,
     protection_domain::ProtectionDomain, AccessFlags,
 };
+
+#[cfg(feature = "debug")]
+use crate::verbs::address::Gid;
+
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum ModifyQueuePairError {
+    #[error("modify queue pair failed")]
+    GenericError(#[from] io::Error),
+    #[cfg(feature = "debug")]
+    #[error("invalid transition from {cur_state:?} to {next_state:?}")]
+    InvalidTransition {
+        cur_state: QueuePairState,
+        next_state: QueuePairState,
+        source: io::Error,
+    },
+    #[cfg(feature = "debug")]
+    #[error("invalid transition from {cur_state:?} to {next_state:?}, possible invalid masks {invalid:?}, possible needed masks {needed:?}")]
+    InvalidAttributeMask {
+        cur_state: QueuePairState,
+        next_state: QueuePairState,
+        invalid: QueuePairAttributeMask,
+        needed: QueuePairAttributeMask,
+        source: io::Error,
+    },
+    #[cfg(feature = "debug")]
+    #[error("resolve route timed out, source gid index: {sgid_index}, destination gid: {gid}")]
+    ResolveRouteTimedout {
+        sgid_index: u8,
+        gid: Gid,
+        source: io::Error,
+    },
+    #[cfg(feature = "debug")]
+    #[error("network unreachable, source gid index: {sgid_index}, destination gid: {gid}")]
+    NetworkUnreachable {
+        sgid_index: u8,
+        gid: Gid,
+        source: io::Error,
+    },
+}
+
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum PostSendError {
+    #[error("post send failed")]
+    GenericError(#[from] io::Error),
+    #[cfg(feature = "debug")]
+    #[error("invalid value provided in work request")]
+    InvalidWorkRequest(#[source] io::Error),
+    #[cfg(feature = "debug")]
+    #[error("invalid value provided in queue pair")]
+    InvalidValueInQueuePair(#[source] io::Error),
+    #[cfg(feature = "debug")]
+    #[error("send queue is full or not enough resources to complete this operation")]
+    NotEnoughResources(#[source] io::Error),
+}
 
 #[repr(u32)]
 #[derive(Debug, Clone, Copy)]
@@ -138,22 +193,44 @@ pub trait QueuePair {
     /// associated with the return value.
     unsafe fn qp(&self) -> NonNull<ibv_qp>;
 
-    fn modify(&mut self, attr: &QueuePairAttribute) -> Result<(), String> {
+    fn modify(&mut self, attr: &QueuePairAttribute) -> Result<(), ModifyQueuePairError> {
         // ibv_qp_attr does not impl Clone trait, so we use struct update syntax here
         let mut qp_attr = ibv_qp_attr { ..attr.attr };
         let ret = unsafe { ibv_modify_qp(self.qp().as_ptr(), &mut qp_attr as *mut _, attr.attr_mask.bits) };
         if ret == 0 {
             Ok(())
         } else {
-            // User doesn't pass in a mask with IBV_QP_STATE, we just assume user doesn't
-            // want to change the state, pass self.state() as next_state
-            if attr.attr_mask.contains(QueuePairAttributeMask::State) {
-                attr_mask_check(attr.attr_mask, self.state(), attr.attr.qp_state.into()).unwrap();
-            } else {
-                attr_mask_check(attr.attr_mask, self.state(), self.state()).unwrap();
+            match ret {
+                #[cfg(feature = "debug")]
+                libc::EINVAL => {
+                    // User doesn't pass in a mask with IBV_QP_STATE, we just assume user doesn't
+                    // want to change the state, pass self.state() as next_state
+                    let err = if attr.attr_mask.contains(QueuePairAttributeMask::State) {
+                        attr_mask_check(attr.attr_mask, self.state(), attr.attr.qp_state.into())
+                    } else {
+                        attr_mask_check(attr.attr_mask, self.state(), self.state())
+                    };
+                    match err {
+                        Ok(()) => Err(ModifyQueuePairError::GenericError(io::Error::from_raw_os_error(
+                            libc::EINVAL,
+                        ))),
+                        Err(err) => Err(err),
+                    }
+                },
+                #[cfg(feature = "debug")]
+                libc::ETIMEDOUT => Err(ModifyQueuePairError::ResolveRouteTimedout {
+                    sgid_index: attr.attr.ah_attr.grh.sgid_index,
+                    gid: attr.attr.ah_attr.grh.dgid.into(),
+                    source: io::Error::from_raw_os_error(libc::ETIMEDOUT),
+                }),
+                #[cfg(feature = "debug")]
+                libc::ENETUNREACH => Err(ModifyQueuePairError::NetworkUnreachable {
+                    sgid_index: attr.attr.ah_attr.grh.sgid_index,
+                    gid: attr.attr.ah_attr.grh.dgid.into(),
+                    source: io::Error::from_raw_os_error(libc::ENETUNREACH),
+                }),
+                err => Err(ModifyQueuePairError::GenericError(io::Error::from_raw_os_error(err))),
             }
-
-            Err(format!("ibv_modify_qp failed, err={ret}"))
         }
     }
 
@@ -217,7 +294,7 @@ pub trait PostSendGuard: private_traits::PostSendGuard {
     // every qp should hold only one WorkRequestHandle at the same time
     fn construct_wr(&mut self, wr_id: u64, wr_flags: WorkRequestFlags) -> WorkRequestHandle<'_, Self>;
 
-    fn post(self) -> Result<(), String>;
+    fn post(self) -> Result<(), PostSendError>;
 }
 
 // According to C standard, enums should be int, but Rust just uses whatever
@@ -263,6 +340,7 @@ pub enum QueuePairAttributeMask {
 //
 // We should consider using `std::mem::variant_count` here, after it stablized.
 //
+#[cfg(feature = "debug")]
 #[derive(Debug, Copy, Clone)]
 struct QueuePairStateTableEntry {
     // whether this state transition is valid.
@@ -271,6 +349,10 @@ struct QueuePairStateTableEntry {
     optional_mask: QueuePairAttributeMask,
 }
 
+#[cfg(feature = "debug")]
+use lazy_static::lazy_static;
+
+#[cfg(feature = "debug")]
 lazy_static! {
     static ref RC_QP_STATE_TABLE: [[QueuePairStateTableEntry; QueuePairState::Error as usize + 1];
     QueuePairState::Error as usize + 1] = {
@@ -713,11 +795,13 @@ impl QueuePairAttribute {
 
 // TODO(zhp): trait for QueuePair
 
+#[cfg(feature = "debug")]
 #[inline]
 fn get_needed_mask(cur_mask: QueuePairAttributeMask, required_mask: QueuePairAttributeMask) -> QueuePairAttributeMask {
     required_mask.and(required_mask.xor(cur_mask))
 }
 
+#[cfg(feature = "debug")]
 #[inline]
 fn get_invalid_mask(
     cur_mask: QueuePairAttributeMask, required_mask: QueuePairAttributeMask, optional_mask: QueuePairAttributeMask,
@@ -725,11 +809,16 @@ fn get_invalid_mask(
     cur_mask.and(required_mask.or(optional_mask).not())
 }
 
+#[cfg(feature = "debug")]
 fn attr_mask_check(
     attr_mask: QueuePairAttributeMask, cur_state: QueuePairState, next_state: QueuePairState,
-) -> Result<(), String> {
+) -> Result<(), ModifyQueuePairError> {
     if !RC_QP_STATE_TABLE[cur_state as usize][next_state as usize].valid {
-        return Err(format!("Invalid transition from {cur_state:?} to {next_state:?}"));
+        return Err(ModifyQueuePairError::InvalidTransition {
+            cur_state,
+            next_state,
+            source: io::Error::from_raw_os_error(libc::EINVAL),
+        });
     }
 
     let required = RC_QP_STATE_TABLE[cur_state as usize][next_state as usize].required_mask;
@@ -739,7 +828,13 @@ fn attr_mask_check(
     if invalid.bits == 0 && needed.bits == 0 {
         Ok(())
     } else {
-        Err(format!("Invalid transition from {cur_state:?} to {next_state:?}, possible invalid masks {invalid:?}, possible needed masks {needed:?}"))
+        Err(ModifyQueuePairError::InvalidAttributeMask {
+            cur_state,
+            next_state,
+            invalid,
+            needed,
+            source: io::Error::from_raw_os_error(libc::EINVAL),
+        })
     }
 }
 
@@ -750,12 +845,12 @@ pub struct WorkRequestHandle<'g, G: PostSendGuard + ?Sized> {
 pub trait SetScatterGatherEntry {
     /// # Safety
     ///
-    /// set a local buffer to the request; note that the lifetime of the buffer 
+    /// set a local buffer to the request; note that the lifetime of the buffer
     /// associated with the sge is managed by the caller.
     unsafe fn setup_sge(self, lkey: u32, addr: u64, length: u32);
     /// # Safety
     ///
-    /// set a list of local buffers to the request; note that the lifetime of 
+    /// set a list of local buffers to the request; note that the lifetime of
     /// the buffer associated with the sge is managed by the caller.
     unsafe fn setup_sge_list(self, sg_list: &[ibv_sge]);
 }
@@ -826,7 +921,7 @@ impl PostSendGuard for BasicPostSendGuard<'_> {
         WorkRequestHandle { guard: self }
     }
 
-    fn post(mut self) -> Result<(), String> {
+    fn post(mut self) -> Result<(), PostSendError> {
         let mut sge_index = 0;
 
         for i in 0..self.wrs.len() {
@@ -848,7 +943,19 @@ impl PostSendGuard for BasicPostSendGuard<'_> {
         let ret = unsafe { ibv_post_send(self.qp.as_ptr(), self.wrs.as_mut_ptr(), &mut bad_wr) };
         match ret {
             0 => Ok(()),
-            err => Err(format!("ibv_post_send failed, ret={err}")),
+            #[cfg(feature = "debug")]
+            libc::EINVAL => Err(PostSendError::InvalidWorkRequest(io::Error::from_raw_os_error(
+                libc::EINVAL,
+            ))),
+            #[cfg(feature = "debug")]
+            libc::ENOMEM => Err(PostSendError::NotEnoughResources(io::Error::from_raw_os_error(
+                libc::ENOMEM,
+            ))),
+            #[cfg(feature = "debug")]
+            libc::EFAULT => Err(PostSendError::InvalidValueInQueuePair(io::Error::from_raw_os_error(
+                libc::EFAULT,
+            ))),
+            err => Err(PostSendError::GenericError(io::Error::from_raw_os_error(err))),
         }
     }
 }
@@ -932,14 +1039,26 @@ impl PostSendGuard for ExtendedPostSendGuard<'_> {
         WorkRequestHandle { guard: self }
     }
 
-    fn post(mut self) -> Result<(), String> {
+    fn post(mut self) -> Result<(), PostSendError> {
         let ret: i32 = unsafe { ibv_wr_complete(self.qp_ex.unwrap_unchecked().as_ptr()) };
 
         self.qp_ex = None;
 
         match ret {
             0 => Ok(()),
-            err => Err(format!("failed to ibv_wr_complete: ret {err}")),
+            #[cfg(feature = "debug")]
+            libc::EINVAL => Err(PostSendError::InvalidWorkRequest(io::Error::from_raw_os_error(
+                libc::EINVAL,
+            ))),
+            #[cfg(feature = "debug")]
+            libc::ENOMEM => Err(PostSendError::NotEnoughResources(io::Error::from_raw_os_error(
+                libc::ENOMEM,
+            ))),
+            #[cfg(feature = "debug")]
+            libc::EFAULT => Err(PostSendError::InvalidValueInQueuePair(io::Error::from_raw_os_error(
+                libc::EFAULT,
+            ))),
+            err => Err(PostSendError::GenericError(io::Error::from_raw_os_error(err))),
         }
     }
 }
