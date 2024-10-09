@@ -136,8 +136,34 @@ pub trait QueuePair {
     /// return the basic handle of QP;
     /// we mark this method unsafe because the lifetime of ibv_qp is not
     /// associated with the return value.
+    ///
+    /// # Examples
+    ///
+    /// ```compile_fail
+    /// unsafe {
+    ///     let qp_ptr = generic_queue_pair.qp();
+    ///     // Use qp_ptr carefully...
+    /// }
     unsafe fn qp(&self) -> NonNull<ibv_qp>;
 
+    /// Modifies the queue pair attributes.
+    ///
+    /// # Arguments
+    ///
+    /// * `attr` - A reference to the QueuePairAttribute to be applied.
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(())` if the modification was successful.
+    /// * `Err(String)` if the modification failed, containing an error message.
+    ///
+    /// # Examples
+    ///
+    /// ```compile_fail
+    /// let mut attr = QueuePairAttribute::new();
+    /// attr.setup_state(QueuePairState::ReadyToSend);
+    /// generic_queue_pair.modify(&attr)?;
+    /// ```
     fn modify(&mut self, attr: &QueuePairAttribute) -> Result<(), String> {
         // ibv_qp_attr does not impl Clone trait, so we use struct update syntax here
         let mut qp_attr = ibv_qp_attr { ..attr.attr };
@@ -157,15 +183,34 @@ pub trait QueuePair {
         }
     }
 
+    /// Get the queue pair state.
     fn state(&self) -> QueuePairState {
         unsafe { self.qp().as_ref().state.into() }
     }
 
+    /// Get the queue pair number.
     fn qp_number(&self) -> u32 {
         unsafe { self.qp().as_ref().qp_num }
     }
 
-    // Every qp should hold only one PostSendGuard at the same time.
+    /// Could be [`ExtendedPostSendGuard`], [`BasicPostSendGuard`] or [`GenericPostSendGuard`]
+    type Guard<'g>: PostSendGuard
+    where
+        Self: 'g;
+
+    /// Starts a post send operation, every qp should hold only one PostSendGuard at the same time.
+    ///
+    /// # Returns
+    ///
+    /// A `PostSendGuard` that can be used to construct and post send work requests.
+    ///
+    /// # Examples
+    ///
+    /// ```compile_fail
+    /// let mut guard = generic_queue_pair.start_post_send();
+    /// let send_wr = guard.construct_wr(/* ... */);
+    /// guard.post()?;
+    /// ```
     //
     // RPITIT could be used here, but with lifetime bound, there could be problems.
     //
@@ -174,11 +219,21 @@ pub trait QueuePair {
     //      https://github.com/rust-lang/rfcs/pull/3425
     //      https://github.com/rust-lang/rust/issues/125836
     //
-    type Guard<'g>: PostSendGuard
-    where
-        Self: 'g;
     fn start_post_send(&mut self) -> Self::Guard<'_>;
 
+    /// Starts a post receive operation.
+    ///
+    /// # Returns
+    ///
+    /// A `PostRecvGuard` that can be used to construct and post receive work requests.
+    ///
+    /// # Examples
+    ///
+    /// ```compile_fail
+    /// let mut guard = generic_queue_pair.start_post_recv();
+    /// let recv_wr = guard.construct_wr(/* ... */);
+    /// guard.post()?;
+    /// ```
     fn start_post_recv(&mut self) -> PostRecvGuard<'_> {
         PostRecvGuard {
             qp: unsafe { self.qp() },
@@ -750,12 +805,12 @@ pub struct WorkRequestHandle<'g, G: PostSendGuard + ?Sized> {
 pub trait SetScatterGatherEntry {
     /// # Safety
     ///
-    /// set a local buffer to the request; note that the lifetime of the buffer 
+    /// set a local buffer to the request; note that the lifetime of the buffer
     /// associated with the sge is managed by the caller.
     unsafe fn setup_sge(self, lkey: u32, addr: u64, length: u32);
     /// # Safety
     ///
-    /// set a list of local buffers to the request; note that the lifetime of 
+    /// set a list of local buffers to the request; note that the lifetime of
     /// the buffer associated with the sge is managed by the caller.
     unsafe fn setup_sge_list(self, sg_list: &[ibv_sge]);
 }
@@ -803,12 +858,12 @@ impl<'g, G: PostSendGuard> WorkRequestHandle<'g, G> {
     }
 }
 
-pub struct BasicPostSendGuard<'qp> {
+pub struct BasicPostSendGuard<'g> {
     qp: NonNull<ibv_qp>,
     wrs: Vec<ibv_send_wr>,
     sges: Vec<ibv_sge>,
     inline_buffers: Vec<Vec<u8>>,
-    _phantom: PhantomData<&'qp ()>,
+    _phantom: PhantomData<&'g ()>,
 }
 
 impl PostSendGuard for BasicPostSendGuard<'_> {
@@ -1058,5 +1113,155 @@ impl SetScatterGatherEntry for RecvWorkRequestHandle<'_, '_> {
         assert!(!self.guard.wrs.is_empty());
         self.guard.wrs.last_mut().unwrap_unchecked().num_sge = sg_list.len() as _;
         self.guard.sges.extend_from_slice(sg_list);
+    }
+}
+
+#[derive(Debug)]
+pub enum GenericQueuePair<'qp> {
+    /// Variant for a Basic Queue Pair
+    Basic(BasicQueuePair<'qp>),
+    /// Variant for an Extended Queue Pair
+    Extended(ExtendedQueuePair<'qp>),
+}
+
+impl QueuePair for GenericQueuePair<'_> {
+    unsafe fn qp(&self) -> NonNull<ibv_qp> {
+        match self {
+            GenericQueuePair::Basic(qp) => qp.qp(),
+            GenericQueuePair::Extended(qp) => qp.qp(),
+        }
+    }
+
+    fn qp_number(&self) -> u32 {
+        match self {
+            GenericQueuePair::Basic(qp) => qp.qp_number(),
+            GenericQueuePair::Extended(qp) => qp.qp_number(),
+        }
+    }
+
+    fn modify(&mut self, attr: &QueuePairAttribute) -> Result<(), String> {
+        match self {
+            GenericQueuePair::Basic(qp) => qp.modify(attr),
+            GenericQueuePair::Extended(qp) => qp.modify(attr),
+        }
+    }
+
+    fn start_post_recv(&mut self) -> PostRecvGuard<'_> {
+        match self {
+            GenericQueuePair::Basic(qp) => qp.start_post_recv(),
+            GenericQueuePair::Extended(qp) => qp.start_post_recv(),
+        }
+    }
+
+    type Guard<'g> = GenericPostSendGuard<'g> where Self: 'g;
+
+    fn start_post_send(&mut self) -> Self::Guard<'_> {
+        match self {
+            GenericQueuePair::Basic(qp) => GenericPostSendGuard::Basic(qp.start_post_send()),
+            GenericQueuePair::Extended(qp) => GenericPostSendGuard::Extended(qp.start_post_send()),
+        }
+    }
+}
+
+pub enum GenericPostSendGuard<'g> {
+    Basic(BasicPostSendGuard<'g>),
+    Extended(ExtendedPostSendGuard<'g>),
+}
+
+impl<'g> PostSendGuard for GenericPostSendGuard<'g> {
+    fn construct_wr(&mut self, wr_id: u64, wr_flags: WorkRequestFlags) -> WorkRequestHandle<'_, Self> {
+        match self {
+            GenericPostSendGuard::Basic(guard) => {
+                guard.construct_wr(wr_id, wr_flags);
+                WorkRequestHandle { guard: self }
+            },
+            GenericPostSendGuard::Extended(guard) => {
+                guard.construct_wr(wr_id, wr_flags);
+                WorkRequestHandle { guard: self }
+            },
+        }
+    }
+
+    fn post(self) -> Result<(), String> {
+        match self {
+            GenericPostSendGuard::Basic(guard) => guard.post(),
+            GenericPostSendGuard::Extended(guard) => guard.post(),
+        }
+    }
+}
+
+impl<'g> private_traits::PostSendGuard for GenericPostSendGuard<'g> {
+    fn setup_send(&mut self) {
+        match self {
+            GenericPostSendGuard::Basic(guard) => guard.setup_send(),
+            GenericPostSendGuard::Extended(guard) => guard.setup_send(),
+        }
+    }
+
+    fn setup_write(&mut self, rkey: u32, remote_addr: u64) {
+        match self {
+            GenericPostSendGuard::Basic(guard) => guard.setup_write(rkey, remote_addr),
+            GenericPostSendGuard::Extended(guard) => guard.setup_write(rkey, remote_addr),
+        }
+    }
+
+    fn setup_inline_data(&mut self, buf: &[u8]) {
+        match self {
+            GenericPostSendGuard::Basic(guard) => guard.setup_inline_data(buf),
+            GenericPostSendGuard::Extended(guard) => guard.setup_inline_data(buf),
+        }
+    }
+
+    fn setup_inline_data_list(&mut self, bufs: &[IoSlice<'_>]) {
+        match self {
+            GenericPostSendGuard::Basic(guard) => guard.setup_inline_data_list(bufs),
+            GenericPostSendGuard::Extended(guard) => guard.setup_inline_data_list(bufs),
+        }
+    }
+
+    unsafe fn setup_sge(&mut self, lkey: u32, addr: u64, length: u32) {
+        match self {
+            GenericPostSendGuard::Basic(guard) => guard.setup_sge(lkey, addr, length),
+            GenericPostSendGuard::Extended(guard) => guard.setup_sge(lkey, addr, length),
+        }
+    }
+
+    unsafe fn setup_sge_list(&mut self, sg_list: &[ibv_sge]) {
+        match self {
+            GenericPostSendGuard::Basic(guard) => guard.setup_sge_list(sg_list),
+            GenericPostSendGuard::Extended(guard) => guard.setup_sge_list(sg_list),
+        }
+    }
+}
+
+impl<'qp> From<BasicQueuePair<'qp>> for GenericQueuePair<'qp> {
+    /// Converts a BasicQueuePair into a GenericQueuePair.
+    ///
+    /// This allows for easy creation of a GenericQueuePair from a BasicQueuePair.
+    ///
+    /// # Examples
+    ///
+    /// ```compile_fail
+    /// let basic_qp = builder.build().unwarp();
+    /// let generic_qp: GenericQueuePair = basic_qp.into();
+    /// ```
+    fn from(qp: BasicQueuePair<'qp>) -> Self {
+        GenericQueuePair::Basic(qp)
+    }
+}
+
+impl<'qp> From<ExtendedQueuePair<'qp>> for GenericQueuePair<'qp> {
+    /// Converts an ExtendedQueuePair into a GenericQueuePair.
+    ///
+    /// This allows for easy creation of a GenericQueuePair from an ExtendedQueuePair.
+    ///
+    /// # Examples
+    ///
+    /// ```compile_fail
+    /// let extended_qp = builder.build_ex().unwarp();
+    /// let generic_qp: GenericQueuePair = extended_qp.into();
+    /// ```
+    fn from(qp: ExtendedQueuePair<'qp>) -> Self {
+        GenericQueuePair::Extended(qp)
     }
 }
