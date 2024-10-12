@@ -21,9 +21,15 @@ pub struct CommunicationManager {
 }
 
 pub enum PortSpace {
-    Ib = rdma_port_space::RDMA_PS_IB as isize,
-    Ipoib = rdma_port_space::RDMA_PS_IPOIB as isize,
+    /// Provides for any IB services (UD, UC, RC, XRC, etc.).
+    InfiniBand = rdma_port_space::RDMA_PS_IB as isize,
+    IpOverInfiniband = rdma_port_space::RDMA_PS_IPOIB as isize,
+    /// Provides reliable, connection-oriented QP communication. Unlike TCP, the RDMA port space
+    /// provides message, not stream, based communication. In other words, this would create a
+    /// [`QueuePair`] with [`QueuePairType::ReliableConnection`]
     Tcp = rdma_port_space::RDMA_PS_TCP as isize,
+    /// Provides unreliable, connectionless QP communication. Supports both datagram and multicast
+    /// communication. In other words, this would create a [`QueuePair`] with [`QueuePairType::UnreliableDatagram`]
     Udp = rdma_port_space::RDMA_PS_UDP as isize,
 }
 
@@ -56,16 +62,20 @@ impl EventChannel {
         })
     }
 
-    pub fn create_id(&mut self, ctx: DeviceContext) -> Result<CommunicationManager, String> {
-        let mut cm_id = MaybeUninit::<*mut rdma_cm_id>::uninit();
+    /// Creates an identifier that is used to track communication information.
+    pub fn create_id(&mut self, port_space: PortSpace) -> Result<CommunicationManager, String> {
+        let mut cm = CommunicationManager {
+            cm_id: NonNull::dangling(),
+        };
+        let mut cm_id = std::ptr::null_mut();
         let ret;
 
         unsafe {
             ret = rdma_create_id(
                 self.channel.as_mut(),
-                cm_id.as_mut_ptr(),
-                ctx.context as _,
-                PortSpace::Tcp as u32,
+                &mut cm_id,
+                &mut cm as *mut _ as *mut std::ffi::c_void,
+                port_space as u32,
             );
         }
 
@@ -73,13 +83,12 @@ impl EventChannel {
             return Err(format!("Failed to create cm_id {ret}"));
         }
 
-        unsafe {
-            cm_id.assume_init();
+        if cm_id.is_null() {
+            return Err("Received null cm_id pointer".to_string());
         }
 
-        Ok(CommunicationManager {
-            cm_id: unsafe { NonNull::new(*cm_id.as_mut_ptr()).unwrap_unchecked() },
-        })
+        cm.cm_id = unsafe { NonNull::new_unchecked(cm_id) };
+        Ok(cm)
     }
 
     pub fn get_cm_event() -> Result<Event, String> {
