@@ -1,6 +1,9 @@
+#![allow(clippy::while_let_on_iterator)]
+
 use core::time;
 use std::{io::IoSlice, thread};
 
+use sideway::verbs::queue_pair::GenericQueuePair;
 use sideway::verbs::{
     address::{AddressHandleAttribute, GidType},
     device,
@@ -12,9 +15,12 @@ use sideway::verbs::{
     AccessFlags,
 };
 
-#[test]
-#[allow(clippy::while_let_on_iterator)]
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+use rstest::rstest;
+
+#[rstest]
+#[case(true)]
+#[case(false)]
+fn main(#[case] use_qp_ex: bool) -> Result<(), Box<dyn std::error::Error>> {
     let device_list = device::DeviceList::new()?;
     for device in &device_list {
         let ctx = device.open().unwrap();
@@ -30,12 +36,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         let mut builder = pd.create_qp_builder();
 
-        let mut qp = builder
-            .setup_max_inline_data(128)
-            .setup_send_cq(&sq)
-            .setup_recv_cq(&rq)
-            .build()
-            .unwrap();
+        let mut qp: GenericQueuePair = if use_qp_ex {
+            builder
+                .setup_max_inline_data(128)
+                .setup_send_cq(&sq)
+                .setup_recv_cq(&rq)
+                .build_ex()
+                .unwrap()
+                .into()
+        } else {
+            builder
+                .setup_max_inline_data(128)
+                .setup_send_cq(&sq)
+                .setup_recv_cq(&rq)
+                .build()
+                .unwrap()
+                .into()
+        };
 
         println!("qp pointer is {:?}", qp);
         // modify QP to INIT state
