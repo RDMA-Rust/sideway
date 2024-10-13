@@ -22,6 +22,7 @@ os_socketaddr = "0.2"
 bitmask-enum = "2.2"
 lazy_static = "1.5.0"
 serde = { version = "1.0", features = ["derive"] }
+thiserror = "1.0.64"
 
 [dev-dependencies]
 trybuild = "1.0"
@@ -33,3 +34,15 @@ quanta = "0.12"
 byte-unit = "5.1"
 ouroboros = "0.18"
 proptest = "1.5"
+anyhow = "1.0"
+
+[features]
+debug = []
+
+[[example]]
+name = "rc_pingpong"
+required-features = ["debug"]
+
+[[example]]
+name = "rc_pingpong_split"
+required-features = ["debug"]
