@@ -584,7 +584,7 @@ impl QueuePair for ExtendedQueuePair<'_> {
         }
 
         ExtendedPostSendGuard {
-            qp_ex: Some(self.qp_ex),
+            qp_ex: self.qp_ex,
             _phantom: PhantomData,
         }
     }
@@ -1081,23 +1081,24 @@ impl private_traits::PostSendGuard for BasicPostSendGuard<'_> {
 }
 
 pub struct ExtendedPostSendGuard<'qp> {
-    qp_ex: Option<NonNull<ibv_qp_ex>>,
+    qp_ex: NonNull<ibv_qp_ex>,
     _phantom: PhantomData<&'qp ()>,
 }
 
 impl PostSendGuard for ExtendedPostSendGuard<'_> {
     fn construct_wr(&mut self, wr_id: u64, wr_flags: WorkRequestFlags) -> WorkRequestHandle<'_, Self> {
         unsafe {
-            self.qp_ex.unwrap_unchecked().as_mut().wr_id = wr_id;
-            self.qp_ex.unwrap_unchecked().as_mut().wr_flags = wr_flags.bits;
+            self.qp_ex.as_mut().wr_id = wr_id;
+            self.qp_ex.as_mut().wr_flags = wr_flags.bits;
         }
         WorkRequestHandle { guard: self }
     }
 
-    fn post(mut self) -> Result<(), PostSendError> {
-        let ret: i32 = unsafe { ibv_wr_complete(self.qp_ex.unwrap_unchecked().as_ptr()) };
+    fn post(self) -> Result<(), PostSendError> {
+        let ret: i32 = unsafe { ibv_wr_complete(self.qp_ex.as_ptr()) };
 
-        self.qp_ex = None;
+        // do not run the dtor
+        std::mem::forget(self);
 
         match ret {
             0 => Ok(()),
@@ -1120,19 +1121,15 @@ impl PostSendGuard for ExtendedPostSendGuard<'_> {
 
 impl private_traits::PostSendGuard for ExtendedPostSendGuard<'_> {
     fn setup_send(&mut self) {
-        unsafe {
-            ibv_wr_send(self.qp_ex.unwrap_unchecked().as_ptr());
-        }
+        unsafe { ibv_wr_send(self.qp_ex.as_ptr()) };
     }
 
     fn setup_write(&mut self, rkey: u32, remote_addr: u64) {
-        unsafe {
-            ibv_wr_rdma_write(self.qp_ex.unwrap_unchecked().as_ptr(), rkey, remote_addr);
-        }
+        unsafe { ibv_wr_rdma_write(self.qp_ex.as_ptr(), rkey, remote_addr) };
     }
 
     fn setup_inline_data(&mut self, buf: &[u8]) {
-        unsafe { ibv_wr_set_inline_data(self.qp_ex.unwrap_unchecked().as_ptr(), buf.as_ptr() as _, buf.len()) }
+        unsafe { ibv_wr_set_inline_data(self.qp_ex.as_ptr(), buf.as_ptr() as _, buf.len()) }
     }
 
     fn setup_inline_data_list(&mut self, bufs: &[IoSlice<'_>]) {
@@ -1143,31 +1140,21 @@ impl private_traits::PostSendGuard for ExtendedPostSendGuard<'_> {
             length: x.len(),
         }));
 
-        unsafe {
-            ibv_wr_set_inline_data_list(
-                self.qp_ex.unwrap_unchecked().as_ptr(),
-                buf_list.len(),
-                buf_list.as_ptr(),
-            );
-        }
+        unsafe { ibv_wr_set_inline_data_list(self.qp_ex.as_ptr(), buf_list.len(), buf_list.as_ptr()) };
     }
 
     unsafe fn setup_sge(&mut self, lkey: u32, addr: u64, length: u32) {
-        ibv_wr_set_sge(self.qp_ex.unwrap_unchecked().as_ptr(), lkey, addr, length);
+        ibv_wr_set_sge(self.qp_ex.as_ptr(), lkey, addr, length);
     }
 
     unsafe fn setup_sge_list(&mut self, sg_list: &[ibv_sge]) {
-        ibv_wr_set_sge_list(self.qp_ex.unwrap_unchecked().as_ptr(), sg_list.len(), sg_list.as_ptr());
+        ibv_wr_set_sge_list(self.qp_ex.as_ptr(), sg_list.len(), sg_list.as_ptr());
     }
 }
 
 impl Drop for ExtendedPostSendGuard<'_> {
     fn drop(&mut self) {
-        if let Some(qp_ex) = self.qp_ex {
-            unsafe {
-                ibv_wr_abort(qp_ex.as_ptr());
-            }
-        }
+        unsafe { ibv_wr_abort(self.qp_ex.as_ptr()) };
     }
 }
 
