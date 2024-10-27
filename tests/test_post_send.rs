@@ -3,6 +3,7 @@
 use core::time;
 use std::{io::IoSlice, thread};
 
+use sideway::verbs::completion::GenericCompletionQueue;
 use sideway::verbs::queue_pair::GenericQueuePair;
 use sideway::verbs::{
     address::{AddressHandleAttribute, GidType},
@@ -18,9 +19,11 @@ use sideway::verbs::{
 use rstest::rstest;
 
 #[rstest]
-#[case(true)]
-#[case(false)]
-fn main(#[case] use_qp_ex: bool) -> Result<(), Box<dyn std::error::Error>> {
+#[case(true, true)]
+#[case(false, true)]
+#[case(true, false)]
+#[case(false, false)]
+fn main(#[case] use_qp_ex: bool, #[case] use_cq_ex: bool) -> Result<(), Box<dyn std::error::Error>> {
     let device_list = device::DeviceList::new()?;
     for device in &device_list {
         let ctx = device.open().unwrap();
@@ -31,27 +34,25 @@ fn main(#[case] use_qp_ex: bool) -> Result<(), Box<dyn std::error::Error>> {
 
         let _comp_channel = ctx.create_comp_channel().unwrap();
         let mut cq_builder = ctx.create_cq_builder();
-        let sq = cq_builder.setup_cqe(128).build().unwrap();
-        let rq = cq_builder.setup_cqe(128).build().unwrap();
+        cq_builder.setup_cqe(128);
+        let sq : GenericCompletionQueue = if use_cq_ex {
+            cq_builder.build_ex().unwrap().into()
+        } else {
+            cq_builder.build().unwrap().into()
+        };
+        let rq : GenericCompletionQueue = if use_cq_ex {
+            cq_builder.build_ex().unwrap().into()
+        } else {
+            cq_builder.build().unwrap().into()
+        };
 
         let mut builder = pd.create_qp_builder();
+        builder.setup_max_inline_data(128).setup_send_cq(&sq).setup_recv_cq(&rq);
 
         let mut qp: GenericQueuePair = if use_qp_ex {
-            builder
-                .setup_max_inline_data(128)
-                .setup_send_cq(&sq)
-                .setup_recv_cq(&rq)
-                .build_ex()
-                .unwrap()
-                .into()
+            builder.build_ex().unwrap().into()
         } else {
-            builder
-                .setup_max_inline_data(128)
-                .setup_send_cq(&sq)
-                .setup_recv_cq(&rq)
-                .build()
-                .unwrap()
-                .into()
+            builder.build().unwrap().into()
         };
 
         println!("qp pointer is {:?}", qp);
