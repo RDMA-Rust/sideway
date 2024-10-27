@@ -397,6 +397,14 @@ impl<'iter> BasicWorkCompletion<'iter> {
     pub fn opcode(&self) -> u32 {
         self.wc.opcode
     }
+
+    pub fn vendor_err(&self) -> u32 {
+        self.wc.vendor_err
+    }
+
+    pub fn byte_len(&self) -> u32 {
+        self.wc.byte_len
+    }
 }
 
 pub struct ExtendedWorkCompletion<'iter> {
@@ -550,6 +558,102 @@ impl<'cq> Iterator for ExtendedPoller<'cq> {
                 })
             }
         }
+    }
+}
+
+#[derive(Debug)]
+pub enum GenericCompletionQueue<'cq> {
+    /// Variant for a Basic CQ
+    Basic(BasicCompletionQueue<'cq>),
+    /// Variant for an Extended CQ
+    Extended(ExtendedCompletionQueue<'cq>),
+}
+
+impl CompletionQueue for GenericCompletionQueue<'_> {
+    unsafe fn cq(&self) -> NonNull<ibv_cq> {
+        match self {
+            GenericCompletionQueue::Basic(cq) => cq.cq(),
+            GenericCompletionQueue::Extended(cq) => cq.cq(),
+        }
+    }
+}
+
+pub enum GenericPoller<'cq> {
+    Basic(BasicPoller<'cq>),
+    Extended(ExtendedPoller<'cq>),
+}
+
+impl GenericCompletionQueue<'_> {
+    pub fn start_poll(&self) -> Result<GenericPoller<'_>, String> {
+        match self {
+            GenericCompletionQueue::Basic(cq) => cq.start_poll().map(GenericPoller::Basic),
+            GenericCompletionQueue::Extended(cq) => cq.start_poll().map(GenericPoller::Extended),
+        }
+    }
+}
+
+impl<'cq> Iterator for GenericPoller<'cq> {
+    type Item = GenericWorkCompletion<'cq>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            GenericPoller::Basic(poller) => poller.next().map(GenericWorkCompletion::Basic),
+            GenericPoller::Extended(poller) => poller.next().map(GenericWorkCompletion::Extended),
+        }
+    }
+}
+
+pub enum GenericWorkCompletion<'iter> {
+    Basic(BasicWorkCompletion<'iter>),
+    Extended(ExtendedWorkCompletion<'iter>),
+}
+
+impl<'iter> GenericWorkCompletion<'iter> {
+    pub fn wr_id(&self) -> u64 {
+        match self {
+            GenericWorkCompletion::Basic(wc) => wc.wr_id(),
+            GenericWorkCompletion::Extended(wc) => wc.wr_id(),
+        }
+    }
+
+    pub fn status(&self) -> u32 {
+        match self {
+            GenericWorkCompletion::Basic(wc) => wc.status(),
+            GenericWorkCompletion::Extended(wc) => wc.status(),
+        }
+    }
+
+    pub fn opcode(&self) -> u32 {
+        match self {
+            GenericWorkCompletion::Basic(wc) => wc.opcode(),
+            GenericWorkCompletion::Extended(wc) => wc.opcode(),
+        }
+    }
+
+    pub fn vendor_err(&self) -> u32 {
+        match self {
+            GenericWorkCompletion::Basic(wc) => wc.vendor_err(),
+            GenericWorkCompletion::Extended(wc) => wc.vendor_err(),
+        }
+    }
+
+    pub fn byte_len(&self) -> u32 {
+        match self {
+            GenericWorkCompletion::Basic(wc) => wc.byte_len(),
+            GenericWorkCompletion::Extended(wc) => wc.byte_len(),
+        }
+    }
+}
+
+impl<'cq> From<BasicCompletionQueue<'cq>> for GenericCompletionQueue<'cq> {
+    fn from(cq: BasicCompletionQueue<'cq>) -> Self {
+        GenericCompletionQueue::Basic(cq)
+    }
+}
+
+impl<'cq> From<ExtendedCompletionQueue<'cq>> for GenericCompletionQueue<'cq> {
+    fn from(cq: ExtendedCompletionQueue<'cq>) -> Self {
+        GenericCompletionQueue::Extended(cq)
     }
 }
 
