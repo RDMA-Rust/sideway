@@ -27,6 +27,7 @@ task:
     - export LD_LIBRARY_PATH=./rdma-core/build/lib
     - just test-basic-with-cov
     - just test-rc-pingpong-with-cov
+    - just test-cmtime-with-cov
     - just generate-cov
     - sed -i 's#/tmp/cirrus-ci-build/##g' lcov.info
     - ./codecov --verbose upload-process --disable-search --fail-on-error -t $CODECOV_TOKEN --git-service github -f ./lcov.info
