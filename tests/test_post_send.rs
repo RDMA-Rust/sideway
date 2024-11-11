@@ -35,12 +35,12 @@ fn main(#[case] use_qp_ex: bool, #[case] use_cq_ex: bool) -> Result<(), Box<dyn 
         let _comp_channel = ctx.create_comp_channel().unwrap();
         let mut cq_builder = ctx.create_cq_builder();
         cq_builder.setup_cqe(128);
-        let sq : GenericCompletionQueue = if use_cq_ex {
+        let sq: GenericCompletionQueue = if use_cq_ex {
             cq_builder.build_ex().unwrap().into()
         } else {
             cq_builder.build().unwrap().into()
         };
-        let rq : GenericCompletionQueue = if use_cq_ex {
+        let rq: GenericCompletionQueue = if use_cq_ex {
             cq_builder.build_ex().unwrap().into()
         } else {
             cq_builder.build().unwrap().into()

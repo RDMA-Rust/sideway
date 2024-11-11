@@ -17,6 +17,8 @@ jobs:
         uses: taiki-e/install-action@v2
         with:
           tool: just,cargo-nextest,cargo-llvm-cov
+      - name: Rust fmt check
+        uses: actions-rust-lang/rustfmt@v1
       - name: Run tests
         run: |
           cd ${{ github.workspace }}
@@ -25,7 +27,8 @@ jobs:
           cargo test
       - name: Get coverage info
         run: |
-          just test-all-with-cov
+          just test-basic-with-cov
+          just generate-cov
       - name: Upload coverage information
         uses: codecov/codecov-action@v4
         with:
