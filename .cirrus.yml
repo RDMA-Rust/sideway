@@ -19,7 +19,14 @@ task:
   codecov_script:
     - curl -Os https://cli.codecov.io/latest/linux/codecov
     - chmod +x codecov
+  rdma_core_script:
+    - dnf install -y git libnl3-devel libudev-devel make pkgconfig valgrind-devel
+    - git clone https://github.com/linux-rdma/rdma-core.git
+    - ./rdma-core/build.sh
   test_script:
-    - just test-all-with-cov
+    - export LD_LIBRARY_PATH=./rdma-core/build/lib
+    - just test-basic-with-cov
+    - just test-rc-pingpong-with-cov
+    - just generate-cov
     - sed -i 's#/tmp/cirrus-ci-build/##g' lcov.info
     - ./codecov --verbose upload-process --disable-search --fail-on-error -t $CODECOV_TOKEN --git-service github -f ./lcov.info
