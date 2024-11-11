@@ -531,7 +531,7 @@ lazy_static! {
 pub struct BasicQueuePair<'res> {
     pub(crate) qp: NonNull<ibv_qp>,
     // phantom data for protection domain & completion queues
-    _phantom: PhantomData<&'res ()>,
+    pub(crate) _phantom: PhantomData<&'res ()>,
 }
 
 unsafe impl Send for BasicQueuePair<'_> {}
