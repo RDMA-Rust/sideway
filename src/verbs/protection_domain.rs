@@ -16,6 +16,9 @@ pub struct ProtectionDomain<'ctx> {
     _dev_ctx: PhantomData<&'ctx ()>,
 }
 
+unsafe impl Send for ProtectionDomain<'_> {}
+unsafe impl Sync for ProtectionDomain<'_> {}
+
 impl Drop for ProtectionDomain<'_> {
     fn drop(&mut self) {
         unsafe {

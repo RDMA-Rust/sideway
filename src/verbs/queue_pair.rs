@@ -534,6 +534,9 @@ pub struct BasicQueuePair<'res> {
     _phantom: PhantomData<&'res ()>,
 }
 
+unsafe impl Send for BasicQueuePair<'_> {}
+unsafe impl Sync for BasicQueuePair<'_> {}
+
 impl Drop for BasicQueuePair<'_> {
     fn drop(&mut self) {
         let ret = unsafe { ibv_destroy_qp(self.qp.as_ptr()) };
@@ -564,6 +567,9 @@ pub struct ExtendedQueuePair<'res> {
     // phantom data for protection domain & completion queues
     _phantom: PhantomData<&'res ()>,
 }
+
+unsafe impl Send for ExtendedQueuePair<'_> {}
+unsafe impl Sync for ExtendedQueuePair<'_> {}
 
 impl Drop for ExtendedQueuePair<'_> {
     fn drop(&mut self) {

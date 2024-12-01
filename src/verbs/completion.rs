@@ -197,6 +197,9 @@ pub struct BasicCompletionQueue<'res> {
     _phantom: PhantomData<&'res ()>,
 }
 
+unsafe impl Send for BasicCompletionQueue<'_> {}
+unsafe impl Sync for BasicCompletionQueue<'_> {}
+
 impl Drop for BasicCompletionQueue<'_> {
     fn drop(&mut self) {
         let ret = unsafe { ibv_destroy_cq(self.cq.as_ptr()) };
@@ -255,6 +258,9 @@ pub struct ExtendedCompletionQueue<'res> {
     // phantom data for dev_ctx & comp_channel
     _phantom: PhantomData<&'res ()>,
 }
+
+unsafe impl Send for ExtendedCompletionQueue<'_> {}
+unsafe impl Sync for ExtendedCompletionQueue<'_> {}
 
 impl Drop for ExtendedCompletionQueue<'_> {
     fn drop(&mut self) {
