@@ -20,6 +20,9 @@ pub struct DeviceContext {
     pub(crate) context: *mut ibv_context,
 }
 
+unsafe impl Send for DeviceContext {}
+unsafe impl Sync for DeviceContext {}
+
 #[repr(u32)]
 #[derive(Debug, Clone, Copy)]
 pub enum Mtu {
