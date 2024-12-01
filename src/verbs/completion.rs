@@ -391,7 +391,7 @@ pub struct BasicWorkCompletion<'iter> {
     _phantom: PhantomData<&'iter ()>,
 }
 
-impl<'iter> BasicWorkCompletion<'iter> {
+impl BasicWorkCompletion<'_> {
     pub fn wr_id(&self) -> u64 {
         self.wc.wr_id
     }
@@ -418,7 +418,7 @@ pub struct ExtendedWorkCompletion<'iter> {
     _phantom: PhantomData<&'iter ()>,
 }
 
-impl<'iter> ExtendedWorkCompletion<'iter> {
+impl ExtendedWorkCompletion<'_> {
     pub fn wr_id(&self) -> u64 {
         unsafe { self.cq.as_ref().wr_id }
     }
@@ -614,7 +614,7 @@ pub enum GenericWorkCompletion<'iter> {
     Extended(ExtendedWorkCompletion<'iter>),
 }
 
-impl<'iter> GenericWorkCompletion<'iter> {
+impl GenericWorkCompletion<'_> {
     pub fn wr_id(&self) -> u64 {
         match self {
             GenericWorkCompletion::Basic(wc) => wc.wr_id(),

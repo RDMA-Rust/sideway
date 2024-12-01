@@ -549,7 +549,10 @@ impl QueuePair for BasicQueuePair<'_> {
         self.qp
     }
 
-    type Guard<'g> = BasicPostSendGuard<'g> where Self: 'g;
+    type Guard<'g>
+        = BasicPostSendGuard<'g>
+    where
+        Self: 'g;
     fn start_post_send(&mut self) -> Self::Guard<'_> {
         BasicPostSendGuard {
             qp: self.qp,
@@ -583,7 +586,10 @@ impl QueuePair for ExtendedQueuePair<'_> {
         NonNull::new_unchecked(&mut (*self.qp_ex.as_ptr()).qp_base as _)
     }
 
-    type Guard<'g> = ExtendedPostSendGuard<'g> where Self: 'g;
+    type Guard<'g>
+        = ExtendedPostSendGuard<'g>
+    where
+        Self: 'g;
     fn start_post_send(&mut self) -> Self::Guard<'_> {
         unsafe {
             ibv_wr_start(self.qp().as_ptr() as _);
@@ -927,7 +933,7 @@ pub struct LocalBufferHandle<'g, G: PostSendGuard> {
     guard: &'g mut G,
 }
 
-impl<'g, G: PostSendGuard> SetInlineData for LocalBufferHandle<'g, G> {
+impl<G: PostSendGuard> SetInlineData for LocalBufferHandle<'_, G> {
     fn setup_inline_data(self, buf: &[u8]) {
         self.guard.setup_inline_data(buf);
     }
@@ -937,7 +943,7 @@ impl<'g, G: PostSendGuard> SetInlineData for LocalBufferHandle<'g, G> {
     }
 }
 
-impl<'g, G: PostSendGuard> SetScatterGatherEntry for LocalBufferHandle<'g, G> {
+impl<G: PostSendGuard> SetScatterGatherEntry for LocalBufferHandle<'_, G> {
     unsafe fn setup_sge(self, lkey: u32, addr: u64, length: u32) {
         self.guard.setup_sge(lkey, addr, length);
     }
@@ -1265,7 +1271,10 @@ impl QueuePair for GenericQueuePair<'_> {
         }
     }
 
-    type Guard<'g> = GenericPostSendGuard<'g> where Self: 'g;
+    type Guard<'g>
+        = GenericPostSendGuard<'g>
+    where
+        Self: 'g;
 
     fn start_post_send(&mut self) -> Self::Guard<'_> {
         match self {
@@ -1280,7 +1289,7 @@ pub enum GenericPostSendGuard<'g> {
     Extended(ExtendedPostSendGuard<'g>),
 }
 
-impl<'g> PostSendGuard for GenericPostSendGuard<'g> {
+impl PostSendGuard for GenericPostSendGuard<'_> {
     fn construct_wr(&mut self, wr_id: u64, wr_flags: WorkRequestFlags) -> WorkRequestHandle<'_, Self> {
         match self {
             GenericPostSendGuard::Basic(guard) => {
@@ -1302,7 +1311,7 @@ impl<'g> PostSendGuard for GenericPostSendGuard<'g> {
     }
 }
 
-impl<'g> private_traits::PostSendGuard for GenericPostSendGuard<'g> {
+impl private_traits::PostSendGuard for GenericPostSendGuard<'_> {
     fn setup_send(&mut self) {
         match self {
             GenericPostSendGuard::Basic(guard) => guard.setup_send(),
