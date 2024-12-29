@@ -1,10 +1,10 @@
 #![allow(static_mut_refs)]
 
-use sideway::cm::communication_manager::{ConnectionParameter, Event, EventChannel, Identifier, PortSpace};
-use sideway::verbs::completion::GenericCompletionQueue;
-use sideway::verbs::device_context::DeviceContext;
-use sideway::verbs::protection_domain::ProtectionDomain;
-use sideway::verbs::queue_pair::{GenericQueuePair, QueuePair, QueuePairState};
+use sideway::ibverbs::completion::GenericCompletionQueue;
+use sideway::ibverbs::device_context::DeviceContext;
+use sideway::ibverbs::protection_domain::ProtectionDomain;
+use sideway::ibverbs::queue_pair::{GenericQueuePair, QueuePair, QueuePairState};
+use sideway::rdmacm::communication_manager::{ConnectionParameter, Event, EventChannel, Identifier, PortSpace};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::str::FromStr;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -159,7 +159,7 @@ fn cma_handler(
     id: Arc<Identifier>, event: Event, resp_wq: Option<Sender<Arc<Identifier>>>,
     req_wq: Option<Sender<Arc<Identifier>>>, disc_wq: Option<Sender<Arc<Identifier>>>,
 ) {
-    use sideway::cm::communication_manager::EventType::*;
+    use sideway::rdmacm::communication_manager::EventType::*;
     let node: Option<Arc<Mutex<Node>>> = id.get_context();
 
     match event.event_type() {

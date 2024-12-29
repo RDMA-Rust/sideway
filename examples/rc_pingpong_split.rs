@@ -30,19 +30,19 @@ use clap::{Parser, ValueEnum};
 use ouroboros::self_referencing;
 use postcard::{from_bytes, to_allocvec};
 use serde::{Deserialize, Serialize};
-use sideway::verbs::address::{AddressHandleAttribute, Gid};
-use sideway::verbs::completion::{
+use sideway::ibverbs::address::{AddressHandleAttribute, Gid};
+use sideway::ibverbs::completion::{
     CreateCompletionQueueWorkCompletionFlags, ExtendedCompletionQueue, ExtendedWorkCompletion, WorkCompletionStatus,
 };
-use sideway::verbs::device::{Device, DeviceList};
-use sideway::verbs::device_context::{DeviceContext, Mtu};
-use sideway::verbs::memory_region::MemoryRegion;
-use sideway::verbs::protection_domain::ProtectionDomain;
-use sideway::verbs::queue_pair::{
+use sideway::ibverbs::device::{Device, DeviceList};
+use sideway::ibverbs::device_context::{DeviceContext, Mtu};
+use sideway::ibverbs::memory_region::MemoryRegion;
+use sideway::ibverbs::protection_domain::ProtectionDomain;
+use sideway::ibverbs::queue_pair::{
     ExtendedQueuePair, PostSendError, PostSendGuard, QueuePair, QueuePairAttribute, QueuePairState,
     SetScatterGatherEntry, WorkRequestFlags,
 };
-use sideway::verbs::AccessFlags;
+use sideway::ibverbs::AccessFlags;
 
 use byte_unit::{Byte, UnitType};
 

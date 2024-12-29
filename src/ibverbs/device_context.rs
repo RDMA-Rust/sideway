@@ -1,4 +1,3 @@
-use crate::verbs::address::Gid;
 use std::ffi::{CStr, CString};
 use std::fs;
 use std::io;
@@ -12,7 +11,7 @@ use rdma_mummy_sys::{
     IBV_GID_TYPE_SYSFS_ROCE_V2, IBV_LINK_LAYER_ETHERNET, IBV_LINK_LAYER_INFINIBAND,
 };
 
-use super::address::GidEntry;
+use super::address::{Gid, GidEntry};
 use super::completion::{CompletionChannel, CompletionQueueBuilder};
 use super::protection_domain::ProtectionDomain;
 
@@ -269,7 +268,7 @@ impl DeviceContext {
 
 #[cfg(test)]
 mod tests {
-    use crate::verbs::device;
+    use crate::ibverbs::device;
 
     #[test]
     fn test_query_gid_table_fallback() -> Result<(), Box<dyn std::error::Error>> {

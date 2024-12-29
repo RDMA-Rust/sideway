@@ -1,10 +1,11 @@
-use super::protection_domain::ProtectionDomain;
 use rdma_mummy_sys::{ibv_dereg_mr, ibv_mr};
 use std::{
     alloc::{dealloc, handle_alloc_error, Layout},
     marker::PhantomData,
     ptr::NonNull,
 };
+
+use super::protection_domain::ProtectionDomain;
 
 // This buffer definition is from arrow-buffer
 #[derive(Clone, Debug)]

@@ -13,8 +13,8 @@ use rdma_mummy_sys::{
     rdma_listen, rdma_port_space, rdma_resolve_addr, rdma_resolve_route,
 };
 
-use crate::verbs::device_context::DeviceContext;
-use crate::verbs::queue_pair::{QueuePairAttribute, QueuePairState};
+use crate::ibverbs::device_context::DeviceContext;
+use crate::ibverbs::queue_pair::{QueuePairAttribute, QueuePairState};
 
 #[repr(u32)]
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]

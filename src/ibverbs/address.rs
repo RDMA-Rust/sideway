@@ -214,7 +214,7 @@ impl AddressHandleAttribute {
 
 #[cfg(test)]
 mod tests {
-    use crate::verbs::address::Gid;
+    use crate::ibverbs::address::Gid;
     use rdma_mummy_sys::ibv_gid;
     use rstest::rstest;
     use std::net::Ipv6Addr;

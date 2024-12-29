@@ -1,4 +1,4 @@
-use sideway::verbs::device;
+use sideway::ibverbs::device;
 use tabled::{
     settings::{object::Segment, Alignment, Modify},
     Table, Tabled,

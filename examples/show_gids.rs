@@ -1,6 +1,6 @@
 use std::net::{Ipv4Addr, Ipv6Addr};
 
-use sideway::verbs::{
+use sideway::ibverbs::{
     address::{Gid, GidType},
     device,
 };

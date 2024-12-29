@@ -20,7 +20,7 @@ use super::{
 };
 
 #[cfg(feature = "debug")]
-use crate::verbs::address::Gid;
+use crate::ibverbs::address::Gid;
 
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]

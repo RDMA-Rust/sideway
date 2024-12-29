@@ -1,4 +1,4 @@
-use sideway::verbs::device;
+use sideway::ibverbs::device;
 
 #[test]
 #[allow(clippy::drop_non_drop)]
