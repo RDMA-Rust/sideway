@@ -3,9 +3,9 @@
 use core::time;
 use std::{io::IoSlice, thread};
 
-use sideway::verbs::completion::GenericCompletionQueue;
-use sideway::verbs::queue_pair::GenericQueuePair;
-use sideway::verbs::{
+use sideway::ibverbs::completion::GenericCompletionQueue;
+use sideway::ibverbs::queue_pair::GenericQueuePair;
+use sideway::ibverbs::{
     address::{AddressHandleAttribute, GidType},
     device,
     device_context::Mtu,

@@ -4,7 +4,7 @@ use rdma_mummy_sys::{
     ibv_device, ibv_free_device_list, ibv_get_device_guid, ibv_get_device_list, ibv_get_device_name, ibv_open_device,
 };
 
-use crate::verbs::device_context::DeviceContext;
+use super::device_context::DeviceContext;
 
 pub struct DeviceList {
     devices: *mut *mut ibv_device,

@@ -1,4 +1,4 @@
-use sideway::verbs::device;
+use sideway::ibverbs::device;
 
 #[test]
 fn main() -> Result<(), Box<dyn std::error::Error>> {

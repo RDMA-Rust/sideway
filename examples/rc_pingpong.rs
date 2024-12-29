@@ -19,14 +19,14 @@ use std::str::FromStr;
 use clap::{Parser, ValueEnum};
 use postcard::{from_bytes, to_allocvec};
 use serde::{Deserialize, Serialize};
-use sideway::verbs::address::{AddressHandleAttribute, Gid};
-use sideway::verbs::completion::{CreateCompletionQueueWorkCompletionFlags, WorkCompletionStatus};
-use sideway::verbs::device::DeviceList;
-use sideway::verbs::device_context::Mtu;
-use sideway::verbs::queue_pair::{
+use sideway::ibverbs::address::{AddressHandleAttribute, Gid};
+use sideway::ibverbs::completion::{CreateCompletionQueueWorkCompletionFlags, WorkCompletionStatus};
+use sideway::ibverbs::device::DeviceList;
+use sideway::ibverbs::device_context::Mtu;
+use sideway::ibverbs::queue_pair::{
     PostSendGuard, QueuePair, QueuePairAttribute, QueuePairState, SetScatterGatherEntry, WorkRequestFlags,
 };
-use sideway::verbs::AccessFlags;
+use sideway::ibverbs::AccessFlags;
 
 use byte_unit::{Byte, UnitType};
 

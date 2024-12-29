@@ -1,4 +1,4 @@
-use sideway::verbs::{
+use sideway::ibverbs::{
     address::{AddressHandleAttribute, GidType},
     device,
     device_context::Mtu,
