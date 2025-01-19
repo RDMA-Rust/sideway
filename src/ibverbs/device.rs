@@ -2,6 +2,7 @@ use std::{ffi::CStr, io, marker::PhantomData};
 
 use rdma_mummy_sys::{
     ibv_device, ibv_free_device_list, ibv_get_device_guid, ibv_get_device_list, ibv_get_device_name, ibv_open_device,
+    ibv_transport_type,
 };
 
 use super::device_context::DeviceContext;
@@ -82,6 +83,43 @@ impl<'list> Iterator for DeviceListIter<'list> {
     }
 }
 
+#[repr(i32)]
+pub enum TransportType {
+    Unknown = ibv_transport_type::IBV_TRANSPORT_UNKNOWN,
+    InfiniBand = ibv_transport_type::IBV_TRANSPORT_IB,
+    IWarp = ibv_transport_type::IBV_TRANSPORT_IWARP,
+    Usnic = ibv_transport_type::IBV_TRANSPORT_USNIC,
+    UsnicUdp = ibv_transport_type::IBV_TRANSPORT_USNIC_UDP,
+    Unspecified = ibv_transport_type::IBV_TRANSPORT_UNSPECIFIED,
+}
+
+impl From<i32> for TransportType {
+    fn from(trans: i32) -> Self {
+        match trans {
+            ibv_transport_type::IBV_TRANSPORT_UNKNOWN => TransportType::Unknown,
+            ibv_transport_type::IBV_TRANSPORT_IB => TransportType::InfiniBand,
+            ibv_transport_type::IBV_TRANSPORT_IWARP => TransportType::IWarp,
+            ibv_transport_type::IBV_TRANSPORT_USNIC => TransportType::Usnic,
+            ibv_transport_type::IBV_TRANSPORT_USNIC_UDP => TransportType::UsnicUdp,
+            ibv_transport_type::IBV_TRANSPORT_UNSPECIFIED => TransportType::Unspecified,
+            _ => panic!("Unknown transport type value: {trans}"),
+        }
+    }
+}
+
+impl std::fmt::Display for TransportType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TransportType::InfiniBand => write!(f, "InfiniBand"),
+            TransportType::IWarp => write!(f, "iWARP"),
+            TransportType::Usnic => write!(f, "usNIC"),
+            TransportType::UsnicUdp => write!(f, "usNIC UDP"),
+            TransportType::Unspecified => write!(f, "Unspecified"),
+            TransportType::Unknown => write!(f, "Invalid transport"),
+        }
+    }
+}
+
 pub struct Device<'list> {
     device: *mut ibv_device,
     _dev_list: PhantomData<&'list ()>,
@@ -118,5 +156,9 @@ impl Device<'_> {
 
     pub fn guid(&self) -> u64 {
         unsafe { ibv_get_device_guid(self.device) }
+    }
+
+    pub fn transport_type(&self) -> TransportType {
+        unsafe { (*self.device).transport_type.into() }
     }
 }
