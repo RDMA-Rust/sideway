@@ -9,7 +9,7 @@ struct IbDevice {
     #[tabled(rename = "device")]
     name: String,
     #[tabled(rename = "node GUID")]
-    guid: u64,
+    guid: String,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -20,7 +20,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if let Some(name) = device.name() {
             devices.push(IbDevice {
                 name,
-                guid: device.guid(),
+                guid: format!("{}", device.guid()),
             });
         } else {
             eprintln!("Found a device without a name, skipping.");

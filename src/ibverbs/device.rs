@@ -6,6 +6,7 @@ use rdma_mummy_sys::{
 };
 
 use super::device_context::DeviceContext;
+use super::device_context::Guid;
 
 pub struct DeviceList {
     devices: *mut *mut ibv_device,
@@ -154,8 +155,8 @@ impl Device<'_> {
         }
     }
 
-    pub fn guid(&self) -> u64 {
-        unsafe { ibv_get_device_guid(self.device) }
+    pub fn guid(&self) -> Guid {
+        unsafe { Guid(ibv_get_device_guid(self.device)) }
     }
 
     pub fn transport_type(&self) -> TransportType {
