@@ -1,4 +1,5 @@
 use std::ffi::{CStr, CString};
+use std::fmt;
 use std::fs;
 use std::io;
 use std::mem::MaybeUninit;
@@ -15,6 +16,28 @@ use rdma_mummy_sys::{
 use super::address::{Gid, GidEntry};
 use super::completion::{CompletionChannel, CompletionQueueBuilder};
 use super::protection_domain::ProtectionDomain;
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub struct Guid(pub(crate) u64);
+
+impl Guid {
+    pub fn as_u64(&self) -> u64 {
+        self.0
+    }
+}
+
+impl fmt::Display for Guid {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{:04x}:{:04x}:{:04x}:{:04x}",
+            (self.0 >> 48) & 0xFFFF,
+            (self.0 >> 32) & 0xFFFF,
+            (self.0 >> 16) & 0xFFFF,
+            self.0 & 0xFFFF
+        )
+    }
+}
 
 pub struct DeviceContext {
     pub(crate) context: *mut ibv_context,
@@ -280,12 +303,22 @@ impl DeviceAttr {
         self.attr.orig_attr.vendor_part_id
     }
 
-    pub fn firmware_version(&self) -> [i8; 64] {
-        self.attr.orig_attr.fw_ver
+    pub fn firmware_version(&self) -> String {
+        self.attr
+            .orig_attr
+            .fw_ver
+            .iter()
+            .take_while(|&&c| c > 0)
+            .map(|&c| c as u8 as char)
+            .collect()
     }
 
     pub fn hardware_version(&self) -> u32 {
         self.attr.orig_attr.hw_ver
+    }
+
+    pub fn sys_image_guid(&self) -> Guid {
+        Guid(self.attr.orig_attr.sys_image_guid)
     }
 }
 
