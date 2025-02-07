@@ -97,15 +97,15 @@ pub enum PortSpace {
     /// provides message, not stream, based communication. In other words, this would create a
     /// [`QueuePair`] for [`ReliableConnection`].
     ///
-    /// [`QueuePair`]: crate::verbs::queue_pair::QueuePair
-    /// [`ReliableConnection`]: crate::verbs::queue_pair::QueuePairType::ReliableConnection
+    /// [`QueuePair`]: crate::ibverbs::queue_pair::QueuePair
+    /// [`ReliableConnection`]: crate::ibverbs::queue_pair::QueuePairType::ReliableConnection
     ///
     Tcp = rdma_port_space::RDMA_PS_TCP as isize,
     /// Provides unreliable, connectionless QP communication. Supports both datagram and multicast
     /// communication. In other words, this would create a [`QueuePair`] for [`UnreliableDatagram`].
     ///
-    /// [`QueuePair`]: crate::verbs::queue_pair::QueuePair
-    /// [`UnreliableDatagram`]: crate::verbs::queue_pair::QueuePairType::UnreliableDatagram
+    /// [`QueuePair`]: crate::ibverbs::queue_pair::QueuePair
+    /// [`UnreliableDatagram`]: crate::ibverbs::queue_pair::QueuePairType::UnreliableDatagram
     ///
     Udp = rdma_port_space::RDMA_PS_UDP as isize,
 }
@@ -119,21 +119,21 @@ impl Drop for EventChannel {
 }
 
 impl Event {
-    /// Get the [`CommunicationManager`] associated with this [`Event`].
+    /// Get the [`Identifier`] associated with this [`Event`].
     ///
     /// # Special cases
     ///
     /// - For [`EventType::ConnectRequest`]:
-    ///   A new [`CommunicationManager`] is automatically created to handle
+    ///   A new [`Identifier`] is automatically created to handle
     ///   the incoming connection request. This is distinct from the listener
-    ///   [`CommunicationManager`].
+    ///   [`Identifier`].
     ///
     /// - For other event types:
-    ///   Returns the existing [`CommunicationManager`] associated with the event.
+    ///   Returns the existing [`Identifier`] associated with the event.
     ///
     /// # Note
     ///
-    /// To access the listener [`CommunicationManager`] in case of a connect request,
+    /// To access the listener [`Identifier`] in case of a connect request,
     /// use the [`listener_id`] method instead.
     ///
     /// [`listener_id`]: crate::cm::communication_manager::Event::listener_id
@@ -142,7 +142,7 @@ impl Event {
         self.cm_id.clone()
     }
 
-    /// Get the listener [`CommunicationManager`] associated with this [`Event`].
+    /// Get the listener [`Identifier`] associated with this [`Event`].
     ///
     /// # Note
     ///
@@ -172,7 +172,7 @@ impl Event {
     /// There should be a one-to-one correspondence between successful gets and acks.
     /// This call frees the event structure and any memory that it references.
     ///
-    /// [`get_cm_event`]: crate::cm::communication_manager::EventChannel::get_cm_event
+    /// [`get_cm_event`]: crate::rdmacm::communication_manager::EventChannel::get_cm_event
     ///
     pub fn ack(mut self) -> Result<(), String> {
         let ret = unsafe { rdma_ack_cm_event(self.event.as_mut()) };
