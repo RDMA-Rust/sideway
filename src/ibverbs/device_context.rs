@@ -6,8 +6,8 @@ use std::mem::MaybeUninit;
 use std::ptr::{self, NonNull};
 
 use rdma_mummy_sys::{
-    _ibv_query_gid_ex, _ibv_query_gid_table, ibv_alloc_pd, ibv_close_device, ibv_context, ibv_device_attr_ex,
-    ibv_get_device_name, ibv_gid_entry, ibv_mtu, ibv_port_attr, ibv_port_state, ibv_query_device_ex, ibv_query_gid,
+    ibv_alloc_pd, ibv_close_device, ibv_context, ibv_device_attr_ex, ibv_get_device_name, ibv_gid_entry, ibv_mtu,
+    ibv_port_attr, ibv_port_state, ibv_query_device_ex, ibv_query_gid, ibv_query_gid_ex, ibv_query_gid_table,
     ibv_query_gid_type, ibv_query_port, IBV_GID_TYPE_IB, IBV_GID_TYPE_ROCE_V1, IBV_GID_TYPE_ROCE_V2,
     IBV_GID_TYPE_SYSFS_IB_ROCE_V1, IBV_GID_TYPE_SYSFS_ROCE_V2, IBV_LINK_LAYER_ETHERNET, IBV_LINK_LAYER_INFINIBAND,
     IBV_LINK_LAYER_UNSPECIFIED,
@@ -390,14 +390,7 @@ impl DeviceContext {
     pub fn query_gid_ex(&self, port_num: u8, gid_index: u32) -> Result<GidEntry, String> {
         let mut entry = GidEntry::default();
         unsafe {
-            match _ibv_query_gid_ex(
-                self.context,
-                port_num as u32,
-                gid_index,
-                &mut entry.0,
-                0,
-                size_of::<GidEntry>(),
-            ) {
+            match ibv_query_gid_ex(self.context, port_num as u32, gid_index, &mut entry.0, 0) {
                 0 => Ok(entry),
                 ret => Err(format!(
                     "Failed to query gid_index {gid_index} on port {port_num}, returned {ret}"
@@ -494,13 +487,7 @@ impl DeviceContext {
         let mut entries = vec![GidEntry::default(); size as _];
 
         unsafe {
-            valid_size = _ibv_query_gid_table(
-                self.context,
-                entries.as_mut_ptr() as _,
-                entries.len(),
-                0,
-                size_of::<GidEntry>(),
-            );
+            valid_size = ibv_query_gid_table(self.context, entries.as_mut_ptr() as _, entries.len(), 0);
         };
 
         if valid_size == (-libc::EOPNOTSUPP).try_into().unwrap() {
