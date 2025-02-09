@@ -17,6 +17,78 @@ use super::address::{Gid, GidEntry};
 use super::completion::{CompletionChannel, CompletionQueueBuilder};
 use super::protection_domain::ProtectionDomain;
 
+#[derive(Debug, thiserror::Error)]
+#[error("failed to alloc protection domain")]
+#[non_exhaustive]
+pub struct AllocateProtectionDomainError(#[from] pub AllocateProtectionDomainErrorKind);
+
+#[derive(Debug, thiserror::Error)]
+#[error(transparent)]
+#[non_exhaustive]
+pub enum AllocateProtectionDomainErrorKind {
+    Ibverbs(#[from] io::Error),
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("failed to query device")]
+#[non_exhaustive]
+pub struct QueryDeviceError(#[from] pub QueryDeviceErrorKind);
+
+#[derive(Debug, thiserror::Error)]
+#[error(transparent)]
+#[non_exhaustive]
+pub enum QueryDeviceErrorKind {
+    Ibverbs(#[from] io::Error),
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("failed to query port (port_num={port_num})")]
+#[non_exhaustive]
+pub struct QueryPortError {
+    pub port_num: u8,
+    pub source: QueryPortErrorKind,
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error(transparent)]
+#[non_exhaustive]
+pub enum QueryPortErrorKind {
+    Ibverbs(#[from] io::Error),
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("failed to query GID table")]
+#[non_exhaustive]
+pub struct QueryGidTableError(#[from] pub QueryGidTableErrorKind);
+
+#[derive(Debug, thiserror::Error)]
+#[error(transparent)]
+#[non_exhaustive]
+pub enum QueryGidTableErrorKind {
+    Ibverbs(#[from] io::Error),
+    QueryDevice(#[from] QueryDeviceError),
+    QueryPort(#[from] QueryPortError),
+    QueryGid(#[from] QueryGidError),
+    #[error("invalid device name")]
+    InvalidDeviceName,
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("failed to query GID (port_num={port_num}, gid_idex={gid_index})")]
+#[non_exhaustive]
+pub struct QueryGidError {
+    pub port_num: u8,
+    pub gid_index: u32,
+    pub source: QueryGidErrorKind,
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error(transparent)]
+#[non_exhaustive]
+pub enum QueryGidErrorKind {
+    Ibverbs(#[from] io::Error),
+}
+
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Guid(pub(crate) u64);
 
@@ -331,11 +403,11 @@ impl Drop for DeviceContext {
 }
 
 impl DeviceContext {
-    pub fn alloc_pd(&self) -> Result<ProtectionDomain, String> {
+    pub fn alloc_pd(&self) -> Result<ProtectionDomain, AllocateProtectionDomainError> {
         let pd = unsafe { ibv_alloc_pd(self.context) };
 
         if pd.is_null() {
-            return Err(format!("Create pd failed! {:?}", io::Error::last_os_error()));
+            return Err(AllocateProtectionDomainErrorKind::Ibverbs(io::Error::last_os_error()).into());
         }
 
         Ok(ProtectionDomain::new(self, unsafe {
@@ -351,67 +423,76 @@ impl DeviceContext {
         CompletionQueueBuilder::new(self)
     }
 
-    pub fn query_device(&self) -> Result<DeviceAttr, String> {
+    pub fn query_device(&self) -> Result<DeviceAttr, QueryDeviceError> {
         let mut attr = MaybeUninit::<ibv_device_attr_ex>::uninit();
         unsafe {
             match ibv_query_device_ex(self.context, ptr::null(), attr.as_mut_ptr()) {
                 0 => Ok(DeviceAttr {
                     attr: attr.assume_init(),
                 }),
-                ret => Err(format!("Failed to query device, returned {ret}")),
+                ret => Err(QueryDeviceErrorKind::Ibverbs(io::Error::from_raw_os_error(ret)).into()),
             }
         }
     }
 
-    pub fn query_port(&self, port_num: u8) -> Result<PortAttr, String> {
+    pub fn query_port(&self, port_num: u8) -> Result<PortAttr, QueryPortError> {
         let mut attr = MaybeUninit::<ibv_port_attr>::uninit();
         unsafe {
             match ibv_query_port(self.context, port_num, attr.as_mut_ptr()) {
                 0 => Ok(PortAttr {
                     attr: attr.assume_init(),
                 }),
-                ret => Err(format!("Failed to query port {port_num}, returned {ret}")),
+                ret => Err(QueryPortError {
+                    port_num,
+                    source: io::Error::from_raw_os_error(ret).into(),
+                }),
             }
         }
     }
 
-    pub fn query_gid(&self, port_num: u8, gid_index: i32) -> Result<Gid, String> {
+    pub fn query_gid(&self, port_num: u8, gid_index: u32) -> Result<Gid, QueryGidError> {
         let mut gid = Gid::default();
         unsafe {
-            match ibv_query_gid(self.context, port_num, gid_index, gid.as_mut()) {
+            match ibv_query_gid(self.context, port_num, gid_index as i32, gid.as_mut()) {
                 0 => Ok(gid),
-                ret => Err(format!(
-                    "Failed to query gid_index {gid_index} on port {port_num}, returned {ret}"
-                )),
+                ret => Err(QueryGidError {
+                    port_num,
+                    gid_index,
+                    source: io::Error::from_raw_os_error(ret).into(),
+                }),
             }
         }
     }
 
-    pub fn query_gid_ex(&self, port_num: u8, gid_index: u32) -> Result<GidEntry, String> {
+    pub fn query_gid_ex(&self, port_num: u8, gid_index: u32) -> Result<GidEntry, QueryGidError> {
         let mut entry = GidEntry::default();
         unsafe {
             match ibv_query_gid_ex(self.context, port_num as u32, gid_index, &mut entry.0, 0) {
                 0 => Ok(entry),
-                ret => Err(format!(
-                    "Failed to query gid_index {gid_index} on port {port_num}, returned {ret}"
-                )),
+                ret => Err(QueryGidError {
+                    port_num,
+                    gid_index,
+                    source: io::Error::from_raw_os_error(ret).into(),
+                }),
             }
         }
     }
 
-    pub fn query_gid_type(&self, port_num: u8, gid_index: u32) -> Result<u32, String> {
+    pub fn query_gid_type(&self, port_num: u8, gid_index: u32) -> Result<u32, QueryGidError> {
         let mut gid_type = u32::default();
         unsafe {
             match ibv_query_gid_type(self.context, port_num, gid_index, &mut gid_type) {
                 0 => Ok(gid_type),
-                ret => Err(format!(
-                    "Failed to query gid_index {gid_index} on port {port_num}, returned {ret}"
-                )),
+                ret => Err(QueryGidError {
+                    port_num,
+                    gid_index,
+                    source: io::Error::from_raw_os_error(ret).into(),
+                }),
             }
         }
     }
 
-    pub(crate) fn query_gid_table_fallback(&self) -> Result<Vec<GidEntry>, String> {
+    pub(crate) fn query_gid_table_fallback(&self) -> Result<Vec<GidEntry>, QueryGidTableError> {
         let mut res = Vec::new();
         let dev_attr = self.query_device().unwrap();
         let mut gid_type;
@@ -421,25 +502,28 @@ impl DeviceContext {
 
             if let Some(name) = self.name() {
                 for gid_index in 0..port_attr.gid_tbl_len() {
-                    let gid = self.query_gid(port_num, gid_index).unwrap();
+                    let gid = self
+                        .query_gid(port_num, gid_index as u32)
+                        .map_err(QueryGidTableErrorKind::QueryGid)?;
                     let netdev_index;
 
                     if gid.is_zero() {
                         continue;
                     }
 
-                    unsafe {
-                        gid_type = match self.query_gid_type(port_num, gid_index as u32).unwrap_unchecked() {
-                            IBV_GID_TYPE_SYSFS_IB_ROCE_V1 if port_attr.link_layer() == LinkLayer::Infiniband => {
-                                IBV_GID_TYPE_IB
-                            },
-                            IBV_GID_TYPE_SYSFS_IB_ROCE_V1 if port_attr.link_layer() == LinkLayer::Ethernet => {
-                                IBV_GID_TYPE_ROCE_V1
-                            },
-                            IBV_GID_TYPE_SYSFS_ROCE_V2 => IBV_GID_TYPE_ROCE_V2,
-                            num => panic!("unknown gid type {num}!"),
-                        };
-                    }
+                    gid_type = match self
+                        .query_gid_type(port_num, gid_index as u32)
+                        .map_err(QueryGidTableErrorKind::QueryGid)?
+                    {
+                        IBV_GID_TYPE_SYSFS_IB_ROCE_V1 if port_attr.link_layer() == LinkLayer::Infiniband => {
+                            IBV_GID_TYPE_IB
+                        },
+                        IBV_GID_TYPE_SYSFS_IB_ROCE_V1 if port_attr.link_layer() == LinkLayer::Ethernet => {
+                            IBV_GID_TYPE_ROCE_V1
+                        },
+                        IBV_GID_TYPE_SYSFS_ROCE_V2 => IBV_GID_TYPE_ROCE_V2,
+                        num => panic!("unknown gid type {num}!"),
+                    };
 
                     let netdev = unsafe {
                         fs::read_to_string(format!(
@@ -464,7 +548,7 @@ impl DeviceContext {
                     }))
                 }
             } else {
-                return Err("device doesn't have a valid name".to_string());
+                return Err(QueryGidTableErrorKind::InvalidDeviceName.into());
             }
         }
 
@@ -472,8 +556,8 @@ impl DeviceContext {
     }
 
     #[inline]
-    pub fn query_gid_table(&self) -> Result<Vec<GidEntry>, String> {
-        let dev_attr = self.query_device()?;
+    pub fn query_gid_table(&self) -> Result<Vec<GidEntry>, QueryGidTableError> {
+        let dev_attr = self.query_device().map_err(QueryGidTableErrorKind::QueryDevice)?;
 
         let valid_size;
 
@@ -494,7 +578,7 @@ impl DeviceContext {
             return self.query_gid_table_fallback();
         }
         if valid_size < 0 {
-            return Err(format!("failed to query gid table {valid_size}"));
+            return Err(QueryGidTableErrorKind::Ibverbs(io::Error::from_raw_os_error(-valid_size as i32)).into());
         }
 
         entries.truncate(valid_size.try_into().unwrap());
@@ -643,6 +727,21 @@ mod tests {
             }
         }
 
+        Ok(())
+    }
+
+    #[test]
+    fn test_query_port_error() -> Result<(), Box<dyn std::error::Error>> {
+        let invalid_port_num: u8 = 255;
+        let device_list = device::DeviceList::new()?;
+        for device in &device_list {
+            let ctx = device.open().unwrap();
+            let error = ctx.query_port(invalid_port_num).err().unwrap();
+            assert_eq!(error.port_num, invalid_port_num);
+            match error.source {
+                QueryPortErrorKind::Ibverbs(err) => assert_eq!(err.kind(), io::ErrorKind::InvalidInput),
+            };
+        }
         Ok(())
     }
 }
