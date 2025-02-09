@@ -1,3 +1,24 @@
+# Changelog
+
+All notable changes to this project will be documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [Unreleased]
+
+## [0.2.1](https://github.com/RDMA-Rust/sideway/compare/v0.2.0...v0.2.1) - 2025-02-09
+
+### Added
+
+- add more APIs for reading device attribute
+
+### Other
+
+- *(device_context)* use ibv_query_gid_ex/table without the prefix underscore
+- *(devinfo)* refactor ibv_devinfo to mimic the original rdma-core implementation
+- *(rdmacm)* correct module names and paths in comments
+- *(device)* split guid as a unique type and use String for fw_ver
 
 
 ## v0.1.0 (2024-09-01)
