@@ -19,7 +19,7 @@ struct GidEntries {
     index: i32,
     #[tabled(rename = "GID")]
     gid: Gid,
-    #[tabled(rename = "IPv4", display_with = "display_ipv4")]
+    #[tabled(rename = "IPv4", display = "display_ipv4")]
     ipv4: Option<Ipv4Addr>,
     #[tabled(rename = "Ver")]
     ver: &'static str,
