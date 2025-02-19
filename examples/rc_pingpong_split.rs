@@ -23,6 +23,7 @@
 #![allow(clippy::too_many_arguments)]
 
 use std::io::{Error, Read, Write};
+use std::mem::ManuallyDrop;
 use std::net::{IpAddr, Ipv6Addr, SocketAddr, TcpListener, TcpStream};
 use std::str::FromStr;
 
@@ -192,12 +193,29 @@ impl PingPongContext {
                 qp
             },
             |pd| {
-                pd.reg_managed_mr(size as _)
-                    .unwrap_or_else(|_| panic!("Couldn't register recv MR"))
+                let send_data: ManuallyDrop<Vec<u8>> = ManuallyDrop::new(vec![0; size as _]);
+                let send_mr = unsafe {
+                    pd.reg_mr(
+                        send_data.as_ptr() as _,
+                        send_data.len(),
+                        AccessFlags::LocalWrite | AccessFlags::RemoteWrite,
+                    )
+                    .unwrap_or_else(|_| panic!("Couldn't register send MR"))
+                };
+
+                send_mr
             },
             |pd| {
-                pd.reg_managed_mr(size as _)
+                let recv_data: ManuallyDrop<Vec<u8>> = ManuallyDrop::new(vec![0; size as _]);
+                let recv_mr = unsafe {
+                    pd.reg_mr(
+                        recv_data.as_ptr() as _,
+                        recv_data.len(),
+                        AccessFlags::LocalWrite | AccessFlags::RemoteWrite,
+                    )
                     .unwrap_or_else(|_| panic!("Couldn't register recv MR"))
+                };
+                recv_mr
             },
             size,
             rx_depth,
@@ -215,7 +233,7 @@ impl PingPongContext {
                 (
                     fields.qp.start_post_recv(),
                     fields.recv_mr.lkey(),
-                    fields.recv_mr.buf.data.as_ptr() as u64,
+                    fields.recv_mr.get_ptr() as u64,
                     *fields.size,
                 )
             });
@@ -237,7 +255,7 @@ impl PingPongContext {
             (
                 fields.qp.start_post_send(),
                 fields.send_mr.lkey(),
-                fields.send_mr.buf.data.as_ptr() as u64,
+                fields.send_mr.get_ptr() as u64,
                 *fields.size,
             )
         });

@@ -12,7 +12,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let ctx = device.open().unwrap();
 
         let pd = ctx.alloc_pd().unwrap();
-        let mr = pd.reg_managed_mr(64).unwrap();
+        let data: Vec<u8> = vec![0; 64];
+        let mr = unsafe {
+            pd.reg_mr(
+                data.as_ptr() as _,
+                data.len(),
+                AccessFlags::LocalWrite | AccessFlags::RemoteWrite,
+            )
+            .unwrap()
+        };
 
         let _comp_channel = ctx.create_comp_channel().unwrap();
         let mut cq_builder = ctx.create_cq_builder();
@@ -83,7 +91,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             let write_handle = guard
                 .construct_wr(233, WorkRequestFlags::Signaled | WorkRequestFlags::Inline)
-                .setup_write(mr.rkey(), mr.buf.data.as_ptr() as _);
+                .setup_write(mr.rkey(), mr.get_ptr() as _);
 
             // while holding a write handle, we can't build a send handle at the same time
             let _send_handle = guard.construct_wr(2, 0.into()).setup_send();
@@ -153,7 +161,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             let write_handle = guard
                 .construct_wr(233, WorkRequestFlags::Signaled)
-                .setup_write(mr.rkey(), mr.buf.data.as_ptr() as _);
+                .setup_write(mr.rkey(), mr.get_ptr() as _);
 
             // while holding a write handle, we can't build a send handle at the same time
             let _send_handle = guard.construct_wr(2, 0.into()).setup_send();

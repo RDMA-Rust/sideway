@@ -1,23 +1,23 @@
 error[E0499]: cannot borrow `guard` as mutable more than once at a time
-  --> tests/post_send_guard/one_guard_has_only_one_wr.rs:86:25
+  --> tests/post_send_guard/one_guard_has_only_one_wr.rs:94:25
    |
-83 |             let wr = guard.construct_wr(233, WorkRequestFlags::Signaled | WorkRequestFlags::Inline);
+91 |             let wr = guard.construct_wr(233, WorkRequestFlags::Signaled | WorkRequestFlags::Inline);
    |                      ----- first mutable borrow occurs here
 ...
-86 |             let _wr_2 = guard.construct_wr(2, 0.into());
+94 |             let _wr_2 = guard.construct_wr(2, 0.into());
    |                         ^^^^^ second mutable borrow occurs here
-87 |
-88 |             let _write_handle = wr.setup_write(mr.rkey(), mr.buf.data.as_ptr() as _);
+95 |
+96 |             let _write_handle = wr.setup_write(mr.rkey(), mr.get_ptr() as _);
    |                                 -- first borrow later used here
 
 error[E0499]: cannot borrow `guard` as mutable more than once at a time
-   --> tests/post_send_guard/one_guard_has_only_one_wr.rs:153:25
+   --> tests/post_send_guard/one_guard_has_only_one_wr.rs:161:25
     |
-150 |             let wr = guard.construct_wr(233, WorkRequestFlags::Signaled);
+158 |             let wr = guard.construct_wr(233, WorkRequestFlags::Signaled);
     |                      ----- first mutable borrow occurs here
 ...
-153 |             let _wr_2 = guard.construct_wr(2, 0.into());
+161 |             let _wr_2 = guard.construct_wr(2, 0.into());
     |                         ^^^^^ second mutable borrow occurs here
-154 |
-155 |             let _write_handle = wr.setup_write(mr.rkey(), mr.buf.data.as_ptr() as _);
+162 |
+163 |             let _write_handle = wr.setup_write(mr.rkey(), mr.get_ptr() as _);
     |                                 -- first borrow later used here

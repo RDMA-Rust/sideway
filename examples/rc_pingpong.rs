@@ -154,13 +154,25 @@ fn main() -> anyhow::Result<()> {
     }
 
     let pd = context.alloc_pd().unwrap_or_else(|_| panic!("Couldn't allocate PD"));
-    let send_mr = pd
-        .reg_managed_mr(args.size as _)
-        .unwrap_or_else(|_| panic!("Couldn't register send MR"));
+    let send_data: Vec<u8> = vec![0; args.size as _];
+    let send_mr = unsafe {
+        pd.reg_mr(
+            send_data.as_ptr() as _,
+            send_data.len(),
+            AccessFlags::LocalWrite | AccessFlags::RemoteWrite,
+        )
+        .unwrap_or_else(|_| panic!("Couldn't register send MR"))
+    };
 
-    let recv_mr = pd
-        .reg_managed_mr(args.size as _)
-        .unwrap_or_else(|_| panic!("Couldn't register recv MR"));
+    let mut recv_data: Vec<u8> = vec![0; args.size as _];
+    let recv_mr = unsafe {
+        pd.reg_mr(
+            recv_data.as_ptr() as _,
+            recv_data.len(),
+            AccessFlags::LocalWrite | AccessFlags::RemoteWrite,
+        )
+        .unwrap_or_else(|_| panic!("Couldn't register recv MR"))
+    };
 
     let gid = context.query_gid(args.ib_port, args.gid_idx.into()).unwrap();
     let psn = rand::random::<u32>() & 0xFFFFFF;
@@ -200,7 +212,7 @@ fn main() -> anyhow::Result<()> {
         let recv_handle = guard.construct_wr(RECV_WR_ID);
 
         unsafe {
-            recv_handle.setup_sge(recv_mr.lkey(), recv_mr.buf.data.as_ptr() as _, args.size);
+            recv_handle.setup_sge(recv_mr.lkey(), recv_data.as_mut_ptr() as _, args.size);
         };
 
         guard.post().unwrap();
@@ -300,7 +312,7 @@ fn main() -> anyhow::Result<()> {
         let send_handle = guard.construct_wr(SEND_WR_ID, WorkRequestFlags::Signaled).setup_send();
 
         unsafe {
-            send_handle.setup_sge(send_mr.lkey(), send_mr.buf.data.as_ptr() as _, send_mr.buf.len as _);
+            send_handle.setup_sge(send_mr.lkey(), send_data.as_ptr() as _, args.size);
         }
 
         guard.post()?;
@@ -338,7 +350,7 @@ fn main() -> anyhow::Result<()> {
                                         unsafe {
                                             recv_handle.setup_sge(
                                                 recv_mr.lkey(),
-                                                recv_mr.buf.data.as_ptr() as _,
+                                                recv_data.as_mut_ptr() as _,
                                                 args.size,
                                             );
                                         };
@@ -382,11 +394,7 @@ fn main() -> anyhow::Result<()> {
                             let mut guard = qp.start_post_send();
                             let send_handle = guard.construct_wr(SEND_WR_ID, WorkRequestFlags::Signaled).setup_send();
                             unsafe {
-                                send_handle.setup_sge(
-                                    send_mr.lkey(),
-                                    send_mr.buf.data.as_ptr() as _,
-                                    send_mr.buf.len as _,
-                                );
+                                send_handle.setup_sge(send_mr.lkey(), send_data.as_ptr() as _, args.size);
                             }
                             guard.post()?;
                             outstanding_send = true;
