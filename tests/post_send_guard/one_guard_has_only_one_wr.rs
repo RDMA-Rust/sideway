@@ -12,7 +12,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let ctx = device.open().unwrap();
 
         let pd = ctx.alloc_pd().unwrap();
-        let mr = pd.reg_managed_mr(64).unwrap();
+        let data: Vec<u8> = vec![0; 64];
+        let mr = unsafe {
+            pd.reg_mr(
+                data.as_ptr() as _,
+                data.len(),
+                AccessFlags::LocalWrite | AccessFlags::RemoteWrite,
+            )
+            .unwrap()
+        };
 
         let _comp_channel = ctx.create_comp_channel().unwrap();
         let mut cq_builder = ctx.create_cq_builder();
@@ -85,7 +93,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // while holding a write handle, we can't build a send handle at the same time
             let _wr_2 = guard.construct_wr(2, 0.into());
 
-            let _write_handle = wr.setup_write(mr.rkey(), mr.buf.data.as_ptr() as _);
+            let _write_handle = wr.setup_write(mr.rkey(), mr.get_ptr() as _);
         }
 
         // block for extended qp
@@ -152,7 +160,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // while holding a write handle, we can't build a send handle at the same time
             let _wr_2 = guard.construct_wr(2, 0.into());
 
-            let _write_handle = wr.setup_write(mr.rkey(), mr.buf.data.as_ptr() as _);
+            let _write_handle = wr.setup_write(mr.rkey(), mr.get_ptr() as _);
         }
     }
 

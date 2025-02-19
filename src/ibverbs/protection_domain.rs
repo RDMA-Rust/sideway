@@ -1,11 +1,10 @@
-use rdma_mummy_sys::{ibv_dealloc_pd, ibv_pd, ibv_reg_mr};
-use std::io;
+use rdma_mummy_sys::{ibv_dealloc_pd, ibv_pd};
 use std::marker::PhantomData;
 use std::ptr::NonNull;
 
 use super::{
     device_context::DeviceContext,
-    memory_region::{Buffer, MemoryRegion},
+    memory_region::{MemoryRegion, RegisterMemoryRegionError},
     queue_pair::QueuePairBuilder,
     AccessFlags,
 };
@@ -36,29 +35,16 @@ impl ProtectionDomain<'_> {
         }
     }
 
-    pub fn reg_managed_mr(&self, size: usize) -> Result<MemoryRegion, String> {
-        let buf = Buffer::from_len_zeroed(size);
-
-        let mr = unsafe {
-            ibv_reg_mr(
-                self.pd.as_ptr(),
-                buf.data.as_ptr() as _,
-                buf.len,
-                (AccessFlags::RemoteWrite | AccessFlags::LocalWrite).into(),
-            )
-        };
-
-        if mr.is_null() {
-            return Err(format!("{:?}", io::Error::last_os_error()));
-        }
-
-        Ok(MemoryRegion::new(self, buf, unsafe {
-            NonNull::new(mr).unwrap_unchecked()
-        }))
-    }
-
-    pub fn reg_user_mr(&self) -> Result<MemoryRegion, String> {
-        todo!();
+    /// Register a memory region that was allocated outside this module.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure that `ptr` is valid for `len` bytes
+    /// and that the memory remains accessible and unmodified as needed.
+    pub unsafe fn reg_mr(
+        &self, ptr: usize, len: usize, access: AccessFlags,
+    ) -> Result<MemoryRegion, RegisterMemoryRegionError> {
+        MemoryRegion::reg_mr(self, ptr, len, access)
     }
 
     pub fn create_qp_builder(&self) -> QueuePairBuilder {

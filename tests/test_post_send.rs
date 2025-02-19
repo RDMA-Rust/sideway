@@ -29,8 +29,24 @@ fn main(#[case] use_qp_ex: bool, #[case] use_cq_ex: bool) -> Result<(), Box<dyn 
         let ctx = device.open().unwrap();
 
         let pd = ctx.alloc_pd().unwrap();
-        let mr = pd.reg_managed_mr(64).unwrap();
-        let recv_mr = pd.reg_managed_mr(64).unwrap();
+        let send_data: Vec<u8> = vec![0; 64];
+        let mut recv_data: Vec<u8> = vec![0; 64];
+        let mr = unsafe {
+            pd.reg_mr(
+                send_data.as_ptr() as _,
+                send_data.len(),
+                AccessFlags::LocalWrite | AccessFlags::RemoteWrite,
+            )
+            .unwrap()
+        };
+        let recv_mr = unsafe {
+            pd.reg_mr(
+                recv_data.as_ptr() as _,
+                recv_data.len(),
+                AccessFlags::LocalWrite | AccessFlags::RemoteWrite,
+            )
+            .unwrap()
+        };
 
         let _comp_channel = ctx.create_comp_channel().unwrap();
         let mut cq_builder = ctx.create_cq_builder();
@@ -110,7 +126,7 @@ fn main(#[case] use_qp_ex: bool, #[case] use_cq_ex: bool) -> Result<(), Box<dyn 
         // post one recv buf to the qp
         let mut guard = qp.start_post_recv();
         let recv_handle = guard.construct_wr(114514);
-        unsafe { recv_handle.setup_sge(recv_mr.lkey(), recv_mr.buf.data.as_ptr() as _, recv_mr.buf.len as _) };
+        unsafe { recv_handle.setup_sge(recv_mr.lkey(), recv_data.as_mut_ptr() as _, recv_data.len() as _) };
         guard.post().unwrap();
 
         let mut guard = qp.start_post_send();
@@ -118,7 +134,7 @@ fn main(#[case] use_qp_ex: bool, #[case] use_cq_ex: bool) -> Result<(), Box<dyn 
 
         let write_handle = guard
             .construct_wr(233, WorkRequestFlags::Signaled)
-            .setup_write(mr.rkey(), mr.buf.data.as_ptr() as _);
+            .setup_write(mr.rkey(), send_data.as_ptr() as _);
 
         write_handle.setup_inline_data(&buf);
 
@@ -130,7 +146,7 @@ fn main(#[case] use_qp_ex: bool, #[case] use_cq_ex: bool) -> Result<(), Box<dyn 
         let write_handle = unsafe {
             guard
                 .construct_wr(234, WorkRequestFlags::Signaled)
-                .setup_write(mr.rkey(), mr.buf.data.byte_add(4).as_ptr() as _)
+                .setup_write(mr.rkey(), send_data.as_ptr().byte_add(4) as _)
         };
 
         write_handle.setup_inline_data_list(&[IoSlice::new(buf[0].as_ref()), IoSlice::new(buf[1].as_ref())]);
@@ -155,7 +171,7 @@ fn main(#[case] use_qp_ex: bool, #[case] use_cq_ex: bool) -> Result<(), Box<dyn 
         }
 
         unsafe {
-            let slice = std::slice::from_raw_parts(mr.buf.data.as_ptr(), mr.buf.len);
+            let slice = std::slice::from_raw_parts(mr.get_ptr() as *const u8, mr.region_len());
             println!("Buffer contents: {:?}", slice);
         }
 
@@ -168,7 +184,7 @@ fn main(#[case] use_qp_ex: bool, #[case] use_cq_ex: bool) -> Result<(), Box<dyn 
         }
 
         unsafe {
-            let slice = std::slice::from_raw_parts(recv_mr.buf.data.as_ptr(), recv_mr.buf.len);
+            let slice = std::slice::from_raw_parts(recv_mr.get_ptr() as *const u8, recv_mr.region_len());
             println!("Recv Buffer contents: {:?}", slice);
         }
     }

@@ -12,7 +12,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let ctx = device.open().unwrap();
 
         let pd = ctx.alloc_pd().unwrap();
-        let _mr = pd.reg_managed_mr(64).unwrap();
+        let data: Vec<u8> = vec![0; 64];
+        let _mr = unsafe {
+            pd.reg_mr(
+                data.as_ptr() as _,
+                data.len(),
+                AccessFlags::LocalWrite | AccessFlags::RemoteWrite,
+            )
+            .unwrap()
+        };
 
         let _comp_channel = ctx.create_comp_channel().unwrap();
         let mut cq_builder = ctx.create_cq_builder();
