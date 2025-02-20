@@ -1,5 +1,5 @@
 use sideway::ibverbs::device;
-use sideway::ibverbs::device::Device;
+use sideway::ibverbs::device::{Device, DeviceInfo};
 
 use termtree::Tree;
 

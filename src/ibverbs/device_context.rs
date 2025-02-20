@@ -6,15 +6,17 @@ use std::mem::MaybeUninit;
 use std::ptr::{self, NonNull};
 
 use rdma_mummy_sys::{
-    ibv_alloc_pd, ibv_close_device, ibv_context, ibv_device_attr_ex, ibv_get_device_name, ibv_gid_entry, ibv_mtu,
-    ibv_port_attr, ibv_port_state, ibv_query_device_ex, ibv_query_gid, ibv_query_gid_ex, ibv_query_gid_table,
-    ibv_query_gid_type, ibv_query_port, IBV_GID_TYPE_IB, IBV_GID_TYPE_ROCE_V1, IBV_GID_TYPE_ROCE_V2,
-    IBV_GID_TYPE_SYSFS_IB_ROCE_V1, IBV_GID_TYPE_SYSFS_ROCE_V2, IBV_LINK_LAYER_ETHERNET, IBV_LINK_LAYER_INFINIBAND,
-    IBV_LINK_LAYER_UNSPECIFIED,
+    ibv_alloc_pd, ibv_close_device, ibv_context, ibv_device_attr_ex, ibv_get_device_guid, ibv_get_device_name,
+    ibv_gid_entry, ibv_mtu, ibv_port_attr, ibv_port_state, ibv_query_device_ex, ibv_query_gid, ibv_query_gid_ex,
+    ibv_query_gid_table, ibv_query_gid_type, ibv_query_port, IBV_GID_TYPE_IB, IBV_GID_TYPE_ROCE_V1,
+    IBV_GID_TYPE_ROCE_V2, IBV_GID_TYPE_SYSFS_IB_ROCE_V1, IBV_GID_TYPE_SYSFS_ROCE_V2, IBV_LINK_LAYER_ETHERNET,
+    IBV_LINK_LAYER_INFINIBAND, IBV_LINK_LAYER_UNSPECIFIED,
 };
+use serde::{Deserialize, Serialize};
 
 use super::address::{Gid, GidEntry};
 use super::completion::{CompletionChannel, CompletionQueueBuilder};
+use super::device::{DeviceInfo, TransportType};
 use super::protection_domain::ProtectionDomain;
 
 #[derive(Debug, thiserror::Error)]
@@ -89,7 +91,7 @@ pub enum QueryGidErrorKind {
     Ibverbs(#[from] io::Error),
 }
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Guid(pub(crate) u64);
 
 impl Guid {
@@ -119,7 +121,7 @@ unsafe impl Send for DeviceContext {}
 unsafe impl Sync for DeviceContext {}
 
 #[repr(u32)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum Mtu {
     Mtu256 = ibv_mtu::IBV_MTU_256,
     Mtu512 = ibv_mtu::IBV_MTU_512,
@@ -584,8 +586,10 @@ impl DeviceContext {
         entries.truncate(valid_size.try_into().unwrap());
         Ok(entries)
     }
+}
 
-    pub fn name(&self) -> Option<String> {
+impl DeviceInfo for DeviceContext {
+    fn name(&self) -> Option<String> {
         unsafe {
             let name = ibv_get_device_name((*self.context).device);
             if name.is_null() {
@@ -595,12 +599,20 @@ impl DeviceContext {
             }
         }
     }
+
+    fn guid(&self) -> Guid {
+        unsafe { Guid(ibv_get_device_guid((*self.context).device)) }
+    }
+
+    fn transport_type(&self) -> TransportType {
+        unsafe { (*(*self.context).device).transport_type.into() }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ibverbs::device;
+    use crate::ibverbs::device::{self, DeviceInfo};
 
     #[test]
     fn test_mtu_conversion() {
@@ -741,6 +753,18 @@ mod tests {
             match error.source {
                 QueryPortErrorKind::Ibverbs(err) => assert_eq!(err.kind(), io::ErrorKind::InvalidInput),
             };
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_get_device_info_from_context() -> Result<(), Box<dyn std::error::Error>> {
+        let device_list = device::DeviceList::new()?;
+        for device in &device_list {
+            let ctx = device.open().unwrap();
+            assert_eq!(ctx.name(), device.name());
+            assert_eq!(ctx.guid(), device.guid());
+            assert_eq!(ctx.transport_type(), device.transport_type());
         }
         Ok(())
     }

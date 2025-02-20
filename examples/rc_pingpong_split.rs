@@ -34,7 +34,7 @@ use sideway::ibverbs::address::{AddressHandleAttribute, Gid};
 use sideway::ibverbs::completion::{
     CreateCompletionQueueWorkCompletionFlags, ExtendedCompletionQueue, ExtendedWorkCompletion, WorkCompletionStatus,
 };
-use sideway::ibverbs::device::{Device, DeviceList};
+use sideway::ibverbs::device::{Device, DeviceInfo, DeviceList};
 use sideway::ibverbs::device_context::{DeviceContext, Mtu};
 use sideway::ibverbs::memory_region::MemoryRegion;
 use sideway::ibverbs::protection_domain::ProtectionDomain;
