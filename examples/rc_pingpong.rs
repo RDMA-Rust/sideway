@@ -21,7 +21,7 @@ use postcard::{from_bytes, to_allocvec};
 use serde::{Deserialize, Serialize};
 use sideway::ibverbs::address::{AddressHandleAttribute, Gid};
 use sideway::ibverbs::completion::{CreateCompletionQueueWorkCompletionFlags, WorkCompletionStatus};
-use sideway::ibverbs::device::DeviceList;
+use sideway::ibverbs::device::{DeviceInfo, DeviceList};
 use sideway::ibverbs::device_context::Mtu;
 use sideway::ibverbs::queue_pair::{
     PostSendGuard, QueuePair, QueuePairAttribute, QueuePairState, SetScatterGatherEntry, WorkRequestFlags,

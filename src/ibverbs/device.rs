@@ -1,3 +1,4 @@
+use std::ops::Index;
 use std::{ffi::CStr, io, marker::PhantomData};
 
 use rdma_mummy_sys::{
@@ -8,17 +9,41 @@ use rdma_mummy_sys::{
 use super::device_context::DeviceContext;
 use super::device_context::Guid;
 
+#[derive(Debug, thiserror::Error)]
+#[error("failed to get device list")]
+#[non_exhaustive]
+pub struct GetDeviceListError(#[from] pub GetDeviceListErrorKind);
+
+#[derive(Debug, thiserror::Error)]
+#[error(transparent)]
+#[non_exhaustive]
+pub enum GetDeviceListErrorKind {
+    Ibverbs(#[from] io::Error),
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("failed to open device")]
+#[non_exhaustive]
+pub struct OpenDeviceError(#[from] pub OpenDeviceErrorKind);
+
+#[derive(Debug, thiserror::Error)]
+#[error(transparent)]
+#[non_exhaustive]
+pub enum OpenDeviceErrorKind {
+    Ibverbs(#[from] io::Error),
+}
+
 pub struct DeviceList {
     devices: *mut *mut ibv_device,
     num_devices: usize,
 }
 
 impl DeviceList {
-    pub fn new() -> io::Result<DeviceList> {
+    pub fn new() -> Result<DeviceList, GetDeviceListError> {
         let mut num_devices: i32 = 0;
         let devices = unsafe { ibv_get_device_list(&mut num_devices as *mut _) };
         if devices.is_null() {
-            return Err(io::Error::last_os_error());
+            return Err(GetDeviceListErrorKind::Ibverbs(io::Error::last_os_error()).into());
         }
 
         Ok(DeviceList {
@@ -35,12 +60,39 @@ impl DeviceList {
         }
     }
 
+    pub fn as_device_slice<'list>(&'list self) -> &'list [Device<'list>] {
+        unsafe { std::slice::from_raw_parts(self.devices as *const Device<'list>, self.num_devices) }
+    }
+
+    pub fn get(&self, index: usize) -> Option<Device<'_>> {
+        if index >= self.num_devices {
+            None
+        } else {
+            unsafe {
+                let device = *self.devices.add(index);
+                if device.is_null() {
+                    None
+                } else {
+                    Some(Device::new(device, self))
+                }
+            }
+        }
+    }
+
     pub fn len(&self) -> usize {
         self.num_devices
     }
 
     pub fn is_empty(&self) -> bool {
-        self.num_devices != 0
+        self.num_devices == 0
+    }
+}
+
+impl<'list> Index<usize> for &'list DeviceList {
+    type Output = Device<'list>;
+
+    fn index(&self, index: usize) -> &Self::Output {
+        &self.as_device_slice()[index]
     }
 }
 
@@ -53,6 +105,7 @@ impl Drop for DeviceList {
 impl<'list> IntoIterator for &'list DeviceList {
     type Item = <DeviceListIter<'list> as Iterator>::Item;
     type IntoIter = DeviceListIter<'list>;
+
     fn into_iter(self) -> Self::IntoIter {
         DeviceListIter {
             current: 0,
@@ -85,6 +138,7 @@ impl<'list> Iterator for DeviceListIter<'list> {
 }
 
 #[repr(i32)]
+#[derive(PartialEq, Eq, Debug)]
 pub enum TransportType {
     Unknown = ibv_transport_type::IBV_TRANSPORT_UNKNOWN,
     InfiniBand = ibv_transport_type::IBV_TRANSPORT_IB,
@@ -121,6 +175,12 @@ impl std::fmt::Display for TransportType {
     }
 }
 
+/// A safe wrapper around a raw RDMA device pointer.
+///
+/// The lifetime parameter ensures that a Device cannot outlive the DeviceList
+/// from which it was derived.
+#[derive(Clone, Copy, Debug)]
+#[repr(transparent)]
 pub struct Device<'list> {
     device: *mut ibv_device,
     _dev_list: PhantomData<&'list ()>,
@@ -134,17 +194,31 @@ impl Device<'_> {
         }
     }
 
-    pub fn open(&self) -> io::Result<DeviceContext> {
+    pub fn open(&self) -> Result<DeviceContext, OpenDeviceError> {
         unsafe {
             let context = ibv_open_device(self.device);
             if context.is_null() {
-                return Err(io::Error::last_os_error());
+                return Err(OpenDeviceErrorKind::Ibverbs(io::Error::last_os_error()).into());
             }
             Ok(DeviceContext { context })
         }
     }
+}
 
-    pub fn name(&self) -> Option<String> {
+/// Trait for common device information access
+pub trait DeviceInfo {
+    /// Returns the name of the device, for example, `mlx5_0`
+    fn name(&self) -> Option<String>;
+
+    /// Returns the GUID of the device
+    fn guid(&self) -> Guid;
+
+    /// Returns the transport type of the device
+    fn transport_type(&self) -> TransportType;
+}
+
+impl DeviceInfo for Device<'_> {
+    fn name(&self) -> Option<String> {
         unsafe {
             let name = ibv_get_device_name(self.device);
             if name.is_null() {
@@ -155,11 +229,41 @@ impl Device<'_> {
         }
     }
 
-    pub fn guid(&self) -> Guid {
+    fn guid(&self) -> Guid {
         unsafe { Guid(ibv_get_device_guid(self.device)) }
     }
 
-    pub fn transport_type(&self) -> TransportType {
+    fn transport_type(&self) -> TransportType {
         unsafe { (*self.device).transport_type.into() }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_get_first_and_last() -> Result<(), Box<dyn std::error::Error>> {
+        let devices = DeviceList::new().unwrap();
+
+        assert!(devices.get(devices.len()).is_none());
+
+        if !devices.is_empty() {
+            let first = devices.get(0);
+            let last = devices.get(devices.len() - 1);
+
+            assert!(!first.unwrap().device.is_null());
+            assert!(!last.unwrap().device.is_null());
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    #[should_panic(expected = "index out of bounds")]
+    fn test_out_of_bound_index() {
+        let devices = DeviceList::new().unwrap();
+
+        let _ = (&devices)[devices.len()];
     }
 }

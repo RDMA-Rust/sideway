@@ -3,6 +3,7 @@ use std::net::{Ipv4Addr, Ipv6Addr};
 use sideway::ibverbs::{
     address::{Gid, GidType},
     device,
+    device::DeviceInfo,
 };
 use tabled::{
     settings::{object::Segment, Alignment, Modify, Style},
