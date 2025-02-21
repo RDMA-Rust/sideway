@@ -15,26 +15,24 @@ use std::{
 };
 
 use super::{
-    address::AddressHandleAttribute, completion::CompletionQueue, device_context::Mtu,
-    protection_domain::ProtectionDomain, AccessFlags,
+    address::{AddressHandleAttribute, Gid},
+    completion::CompletionQueue,
+    device_context::Mtu,
+    protection_domain::ProtectionDomain,
+    AccessFlags,
 };
-
-#[cfg(feature = "debug")]
-use crate::ibverbs::address::Gid;
 
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum ModifyQueuePairError {
     #[error("modify queue pair failed")]
     GenericError(#[from] io::Error),
-    #[cfg(feature = "debug")]
     #[error("invalid transition from {cur_state:?} to {next_state:?}")]
     InvalidTransition {
         cur_state: QueuePairState,
         next_state: QueuePairState,
         source: io::Error,
     },
-    #[cfg(feature = "debug")]
     #[error("invalid transition from {cur_state:?} to {next_state:?}, possible invalid masks {invalid:?}, possible needed masks {needed:?}")]
     InvalidAttributeMask {
         cur_state: QueuePairState,
@@ -43,14 +41,12 @@ pub enum ModifyQueuePairError {
         needed: QueuePairAttributeMask,
         source: io::Error,
     },
-    #[cfg(feature = "debug")]
     #[error("resolve route timed out, source gid index: {sgid_index}, destination gid: {gid}")]
     ResolveRouteTimedout {
         sgid_index: u8,
         gid: Gid,
         source: io::Error,
     },
-    #[cfg(feature = "debug")]
     #[error("network unreachable, source gid index: {sgid_index}, destination gid: {gid}")]
     NetworkUnreachable {
         sgid_index: u8,
@@ -64,13 +60,10 @@ pub enum ModifyQueuePairError {
 pub enum PostSendError {
     #[error("post send failed")]
     GenericError(#[from] io::Error),
-    #[cfg(feature = "debug")]
     #[error("invalid value provided in work request")]
     InvalidWorkRequest(#[source] io::Error),
-    #[cfg(feature = "debug")]
     #[error("invalid value provided in queue pair")]
     InvalidQueuePair(#[source] io::Error),
-    #[cfg(feature = "debug")]
     #[error("send queue is full or not enough resources to complete this operation")]
     NotEnoughResources(#[source] io::Error),
 }
@@ -227,7 +220,6 @@ pub trait QueuePair {
             Ok(())
         } else {
             match ret {
-                #[cfg(feature = "debug")]
                 libc::EINVAL => {
                     // User doesn't pass in a mask with IBV_QP_STATE, we just assume user doesn't
                     // want to change the state, pass self.state() as next_state
@@ -243,13 +235,11 @@ pub trait QueuePair {
                         Err(err) => Err(err),
                     }
                 },
-                #[cfg(feature = "debug")]
                 libc::ETIMEDOUT => Err(ModifyQueuePairError::ResolveRouteTimedout {
                     sgid_index: attr.attr.ah_attr.grh.sgid_index,
                     gid: attr.attr.ah_attr.grh.dgid.into(),
                     source: io::Error::from_raw_os_error(libc::ETIMEDOUT),
                 }),
-                #[cfg(feature = "debug")]
                 libc::ENETUNREACH => Err(ModifyQueuePairError::NetworkUnreachable {
                     sgid_index: attr.attr.ah_attr.grh.sgid_index,
                     gid: attr.attr.ah_attr.grh.dgid.into(),
@@ -395,7 +385,6 @@ pub enum QueuePairAttributeMask {
 //
 // We should consider using `std::mem::variant_count` here, after it stablized.
 //
-#[cfg(feature = "debug")]
 #[derive(Debug, Copy, Clone)]
 struct QueuePairStateTableEntry {
     // whether this state transition is valid.
@@ -404,10 +393,8 @@ struct QueuePairStateTableEntry {
     optional_mask: QueuePairAttributeMask,
 }
 
-#[cfg(feature = "debug")]
 use lazy_static::lazy_static;
 
-#[cfg(feature = "debug")]
 lazy_static! {
     static ref RC_QP_STATE_TABLE: [[QueuePairStateTableEntry; QueuePairState::Error as usize + 1];
     QueuePairState::Error as usize + 1] = {
@@ -860,15 +847,11 @@ impl QueuePairAttribute {
     }
 }
 
-// TODO(zhp): trait for QueuePair
-
-#[cfg(feature = "debug")]
 #[inline]
 fn get_needed_mask(cur_mask: QueuePairAttributeMask, required_mask: QueuePairAttributeMask) -> QueuePairAttributeMask {
     required_mask.and(required_mask.xor(cur_mask))
 }
 
-#[cfg(feature = "debug")]
 #[inline]
 fn get_invalid_mask(
     cur_mask: QueuePairAttributeMask, required_mask: QueuePairAttributeMask, optional_mask: QueuePairAttributeMask,
@@ -876,7 +859,6 @@ fn get_invalid_mask(
     cur_mask.and(required_mask.or(optional_mask).not())
 }
 
-#[cfg(feature = "debug")]
 fn attr_mask_check(
     attr_mask: QueuePairAttributeMask, cur_state: QueuePairState, next_state: QueuePairState,
 ) -> Result<(), ModifyQueuePairError> {
@@ -1010,15 +992,12 @@ impl PostSendGuard for BasicPostSendGuard<'_> {
         let ret = unsafe { ibv_post_send(self.qp.as_ptr(), self.wrs.as_mut_ptr(), &mut bad_wr) };
         match ret {
             0 => Ok(()),
-            #[cfg(feature = "debug")]
             libc::EINVAL => Err(PostSendError::InvalidWorkRequest(io::Error::from_raw_os_error(
                 libc::EINVAL,
             ))),
-            #[cfg(feature = "debug")]
             libc::ENOMEM => Err(PostSendError::NotEnoughResources(io::Error::from_raw_os_error(
                 libc::ENOMEM,
             ))),
-            #[cfg(feature = "debug")]
             libc::EFAULT => Err(PostSendError::InvalidQueuePair(io::Error::from_raw_os_error(
                 libc::EFAULT,
             ))),
@@ -1114,15 +1093,12 @@ impl PostSendGuard for ExtendedPostSendGuard<'_> {
 
         match ret {
             0 => Ok(()),
-            #[cfg(feature = "debug")]
             libc::EINVAL => Err(PostSendError::InvalidWorkRequest(io::Error::from_raw_os_error(
                 libc::EINVAL,
             ))),
-            #[cfg(feature = "debug")]
             libc::ENOMEM => Err(PostSendError::NotEnoughResources(io::Error::from_raw_os_error(
                 libc::ENOMEM,
             ))),
-            #[cfg(feature = "debug")]
             libc::EFAULT => Err(PostSendError::InvalidQueuePair(io::Error::from_raw_os_error(
                 libc::EFAULT,
             ))),

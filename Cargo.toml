@@ -36,14 +36,3 @@ ouroboros = "0.18"
 proptest = "1.6"
 anyhow = "1.0"
 termtree = "0.5"
-
-[features]
-debug = []
-
-[[example]]
-name = "rc_pingpong"
-required-features = ["debug"]
-
-[[example]]
-name = "rc_pingpong_split"
-required-features = ["debug"]
