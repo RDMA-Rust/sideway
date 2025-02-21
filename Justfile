@@ -16,9 +16,9 @@ test-basic-with-cov:
     cargo llvm-cov --no-report run --example ibv_devinfo
 
 test-rc-pingpong-with-cov:
-    cargo llvm-cov --no-report run --features="debug" --example rc_pingpong_split -- -d {{rdma_dev}} -g 1 &
+    cargo llvm-cov --no-report run --example rc_pingpong_split -- -d {{rdma_dev}} -g 1 &
     sleep 2
-    cargo llvm-cov --no-report run --features="debug" --example rc_pingpong_split -- -d {{rdma_dev}} -g 1 127.0.0.1
+    cargo llvm-cov --no-report run --example rc_pingpong_split -- -d {{rdma_dev}} -g 1 127.0.0.1
 
 test-cmtime-with-cov:
     cargo llvm-cov --no-report run --example cmtime -- -b {{ip}} &
