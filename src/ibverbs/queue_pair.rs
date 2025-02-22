@@ -7,6 +7,7 @@ use rdma_mummy_sys::{
     ibv_wr_rdma_write, ibv_wr_send, ibv_wr_set_inline_data, ibv_wr_set_inline_data_list, ibv_wr_set_sge,
     ibv_wr_set_sge_list, ibv_wr_start,
 };
+use std::sync::LazyLock;
 use std::{
     io::{self, IoSlice},
     marker::PhantomData,
@@ -393,110 +394,111 @@ struct QueuePairStateTableEntry {
     optional_mask: QueuePairAttributeMask,
 }
 
-use lazy_static::lazy_static;
+static RC_QP_STATE_TABLE: LazyLock<
+    [[QueuePairStateTableEntry; QueuePairState::Error as usize + 1]; QueuePairState::Error as usize + 1],
+> = LazyLock::new(|| {
+    use QueuePairState::*;
 
-lazy_static! {
-    static ref RC_QP_STATE_TABLE: [[QueuePairStateTableEntry; QueuePairState::Error as usize + 1];
-    QueuePairState::Error as usize + 1] = {
-        use QueuePairState::*;
+    let mut qp_state_table = [[QueuePairStateTableEntry {
+        valid: false,
+        required_mask: QueuePairAttributeMask { bits: 0 },
+        optional_mask: QueuePairAttributeMask { bits: 0 },
+    }; Error as usize + 1]; Error as usize + 1];
+    let mut state = Reset;
 
-        let mut qp_state_table =
-            [[QueuePairStateTableEntry { valid: false, required_mask: QueuePairAttributeMask { bits: 0 }, optional_mask: QueuePairAttributeMask { bits: 0 } }; Error as usize + 1]; Error as usize + 1];
-        let mut state = Reset;
-
-        // from any state to reset / error state only requires IBV_QP_STATE
-        while state <= Error {
-            qp_state_table[state as usize][Reset as usize] = QueuePairStateTableEntry {
-                valid: true,
-                required_mask: QueuePairAttributeMask::State,
-                optional_mask: QueuePairAttributeMask { bits: 0 },
-            };
-
-            qp_state_table[state as usize][Error as usize] = QueuePairStateTableEntry {
-                valid: true,
-                required_mask: QueuePairAttributeMask::State,
-                optional_mask: QueuePairAttributeMask { bits: 0 },
-            };
-
-            state = (state as u32 + 1).into()
-        }
-
-        qp_state_table[Reset as usize][Init as usize] = QueuePairStateTableEntry {
+    // from any state to reset / error state only requires IBV_QP_STATE
+    while state <= Error {
+        qp_state_table[state as usize][Reset as usize] = QueuePairStateTableEntry {
             valid: true,
-            required_mask: QueuePairAttributeMask::State
-            | QueuePairAttributeMask::PartitionKeyIndex
-            | QueuePairAttributeMask::Port
-            | QueuePairAttributeMask::AccessFlags,
+            required_mask: QueuePairAttributeMask::State,
             optional_mask: QueuePairAttributeMask { bits: 0 },
         };
 
-        qp_state_table[Init as usize][Init as usize] = QueuePairStateTableEntry {
+        qp_state_table[state as usize][Error as usize] = QueuePairStateTableEntry {
             valid: true,
-            required_mask: QueuePairAttributeMask { bits: 0 },
-            optional_mask: QueuePairAttributeMask::PartitionKeyIndex
-            | QueuePairAttributeMask::Port
-            | QueuePairAttributeMask::AccessFlags,
+            required_mask: QueuePairAttributeMask::State,
+            optional_mask: QueuePairAttributeMask { bits: 0 },
         };
 
-        qp_state_table[Init as usize][ReadyToReceive as usize] = QueuePairStateTableEntry {
-            valid: true,
-            required_mask: QueuePairAttributeMask::State
+        state = (state as u32 + 1).into()
+    }
+
+    qp_state_table[Reset as usize][Init as usize] = QueuePairStateTableEntry {
+        valid: true,
+        required_mask: QueuePairAttributeMask::State
+            | QueuePairAttributeMask::PartitionKeyIndex
+            | QueuePairAttributeMask::Port
+            | QueuePairAttributeMask::AccessFlags,
+        optional_mask: QueuePairAttributeMask { bits: 0 },
+    };
+
+    qp_state_table[Init as usize][Init as usize] = QueuePairStateTableEntry {
+        valid: true,
+        required_mask: QueuePairAttributeMask { bits: 0 },
+        optional_mask: QueuePairAttributeMask::PartitionKeyIndex
+            | QueuePairAttributeMask::Port
+            | QueuePairAttributeMask::AccessFlags,
+    };
+
+    qp_state_table[Init as usize][ReadyToReceive as usize] = QueuePairStateTableEntry {
+        valid: true,
+        required_mask: QueuePairAttributeMask::State
             | QueuePairAttributeMask::AddressVector
             | QueuePairAttributeMask::PathMtu
             | QueuePairAttributeMask::DestinationQueuePairNumber
             | QueuePairAttributeMask::ReceiveQueuePacketSequenceNumber
             | QueuePairAttributeMask::MaxDestinationReadAtomic
             | QueuePairAttributeMask::MinResponderNotReadyTimer,
-            optional_mask: QueuePairAttributeMask::PartitionKeyIndex
+        optional_mask: QueuePairAttributeMask::PartitionKeyIndex
             | QueuePairAttributeMask::AccessFlags
             | QueuePairAttributeMask::AlternatePath,
-        };
+    };
 
-        qp_state_table[ReadyToReceive as usize][ReadyToSend as usize] = QueuePairStateTableEntry {
-            valid: true,
-            required_mask: QueuePairAttributeMask::State
+    qp_state_table[ReadyToReceive as usize][ReadyToSend as usize] = QueuePairStateTableEntry {
+        valid: true,
+        required_mask: QueuePairAttributeMask::State
             | QueuePairAttributeMask::SendQueuePacketSequenceNumber
             | QueuePairAttributeMask::Timeout
             | QueuePairAttributeMask::RetryCount
             | QueuePairAttributeMask::ResponderNotReadyRetryCount
             | QueuePairAttributeMask::MaxReadAtomic,
-            optional_mask: QueuePairAttributeMask::CurrentState
+        optional_mask: QueuePairAttributeMask::CurrentState
             | QueuePairAttributeMask::AccessFlags
             | QueuePairAttributeMask::MinResponderNotReadyTimer
             | QueuePairAttributeMask::AlternatePath
             | QueuePairAttributeMask::PathMigrationState,
-        };
+    };
 
-        qp_state_table[ReadyToSend as usize][ReadyToSend as usize] = QueuePairStateTableEntry {
-            valid: true,
-            required_mask: QueuePairAttributeMask { bits: 0 },
-            optional_mask: QueuePairAttributeMask::CurrentState
+    qp_state_table[ReadyToSend as usize][ReadyToSend as usize] = QueuePairStateTableEntry {
+        valid: true,
+        required_mask: QueuePairAttributeMask { bits: 0 },
+        optional_mask: QueuePairAttributeMask::CurrentState
             | QueuePairAttributeMask::AccessFlags
             | QueuePairAttributeMask::MinResponderNotReadyTimer
             | QueuePairAttributeMask::AlternatePath
             | QueuePairAttributeMask::PathMigrationState,
-        };
+    };
 
-        qp_state_table[ReadyToSend as usize][SendQueueDrain as usize] = QueuePairStateTableEntry {
-            valid: true,
-            required_mask: QueuePairAttributeMask::State,
-            optional_mask: QueuePairAttributeMask::EnableSendQueueDrainedAsyncNotify,
-        };
+    qp_state_table[ReadyToSend as usize][SendQueueDrain as usize] = QueuePairStateTableEntry {
+        valid: true,
+        required_mask: QueuePairAttributeMask::State,
+        optional_mask: QueuePairAttributeMask::EnableSendQueueDrainedAsyncNotify,
+    };
 
-        qp_state_table[SendQueueDrain as usize][ReadyToSend as usize] = QueuePairStateTableEntry {
-            valid: true,
-            required_mask: QueuePairAttributeMask::State,
-            optional_mask: QueuePairAttributeMask::CurrentState
+    qp_state_table[SendQueueDrain as usize][ReadyToSend as usize] = QueuePairStateTableEntry {
+        valid: true,
+        required_mask: QueuePairAttributeMask::State,
+        optional_mask: QueuePairAttributeMask::CurrentState
             | QueuePairAttributeMask::AccessFlags
             | QueuePairAttributeMask::MinResponderNotReadyTimer
             | QueuePairAttributeMask::AlternatePath
             | QueuePairAttributeMask::PathMigrationState,
-        };
+    };
 
-        qp_state_table[SendQueueDrain as usize][SendQueueDrain as usize] = QueuePairStateTableEntry {
-            valid: true,
-            required_mask: QueuePairAttributeMask { bits: 0 },
-            optional_mask: QueuePairAttributeMask::PartitionKeyIndex
+    qp_state_table[SendQueueDrain as usize][SendQueueDrain as usize] = QueuePairStateTableEntry {
+        valid: true,
+        required_mask: QueuePairAttributeMask { bits: 0 },
+        optional_mask: QueuePairAttributeMask::PartitionKeyIndex
             | QueuePairAttributeMask::Port
             | QueuePairAttributeMask::AccessFlags
             | QueuePairAttributeMask::AddressVector
@@ -508,11 +510,10 @@ lazy_static! {
             | QueuePairAttributeMask::ResponderNotReadyRetryCount
             | QueuePairAttributeMask::MaxDestinationReadAtomic
             | QueuePairAttributeMask::PathMigrationState,
-        };
-
-        qp_state_table
     };
-}
+
+    qp_state_table
+});
 
 #[derive(Debug)]
 pub struct BasicQueuePair<'res> {
