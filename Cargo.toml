@@ -21,14 +21,14 @@ libc = "0.2"
 os_socketaddr = "0.2"
 bitmask-enum = "2.2"
 serde = { version = "1.0", features = ["derive"] }
-thiserror = "1.0.64"
+thiserror = "2.0"
 
 [dev-dependencies]
 trybuild = "1.0"
 rstest = "0.24"
 clap = { version = "4.5", features = ["derive"] }
 rand = "0.9"
-postcard = { version = "1.0", features = ["alloc"] }
+postcard = { version = "1.1", features = ["alloc"] }
 quanta = "0.12"
 byte-unit = "5.1"
 ouroboros = "0.18"
