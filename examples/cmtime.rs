@@ -9,13 +9,12 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::str::FromStr;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc::{channel, Sender};
-use std::sync::{Arc, Mutex, Once};
+use std::sync::{Arc, LazyLock, Mutex, Once};
 use std::thread;
 use std::time::Duration;
 use tabled::settings::object::Columns;
 
 use clap::Parser;
-use lazy_static::lazy_static;
 use quanta::Instant;
 use tabled::{
     settings::{object::Segment, Alignment, Modify, Style},
@@ -83,15 +82,15 @@ struct StageResult {
     min: f64,
 }
 
-lazy_static! {
-    static ref STARTED: [AtomicU32; Step::Count as usize] = [const { AtomicU32::new(0) }; Step::Count as usize];
-    static ref COMPLETED: [AtomicU32; Step::Count as usize] = [const { AtomicU32::new(0) }; Step::Count as usize];
-    static ref TIMES: Mutex<[(Instant, Instant); Step::Count as usize]> =
-        Mutex::new([(Instant::recent(), Instant::recent()); Step::Count as usize]);
-    static ref CHANNEL: Mutex<EventChannel> =
-        Mutex::new(EventChannel::new().expect("Failed to create rdma cm event channel"));
-    static ref NODE_IDX: AtomicU32 = AtomicU32::new(0);
-}
+static STARTED: LazyLock<[AtomicU32; Step::Count as usize]> =
+    LazyLock::new(|| [const { AtomicU32::new(0) }; Step::Count as usize]);
+static COMPLETED: LazyLock<[AtomicU32; Step::Count as usize]> =
+    LazyLock::new(|| [const { AtomicU32::new(0) }; Step::Count as usize]);
+static TIMES: LazyLock<Mutex<[(Instant, Instant); Step::Count as usize]>> =
+    LazyLock::new(|| Mutex::new([(Instant::recent(), Instant::recent()); Step::Count as usize]));
+static CHANNEL: LazyLock<Mutex<EventChannel>> =
+    LazyLock::new(|| Mutex::new(EventChannel::new().expect("Failed to create rdma cm event channel")));
+static NODE_IDX: LazyLock<AtomicU32> = LazyLock::new(|| AtomicU32::new(0));
 
 macro_rules! start_perf {
     ($node:expr, $step:expr) => {{
