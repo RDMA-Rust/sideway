@@ -574,7 +574,7 @@ impl DeviceContext {
             valid_size = ibv_query_gid_table(self.context, entries.as_mut_ptr() as _, entries.len(), 0);
         };
 
-        if valid_size == (-libc::EOPNOTSUPP).try_into().unwrap() {
+        if valid_size == <i32 as TryInto<isize>>::try_into(-libc::EOPNOTSUPP).unwrap() {
             return self.query_gid_table_fallback();
         }
         if valid_size < 0 {
