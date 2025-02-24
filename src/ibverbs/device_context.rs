@@ -502,7 +502,9 @@ impl DeviceContext {
         for port_num in 1..(dev_attr.phys_port_cnt() + 1) {
             let port_attr = self.query_port(port_num).unwrap();
 
-            if let Some(name) = self.name() {
+            let name = self.name();
+
+            if !name.is_empty() {
                 for gid_index in 0..port_attr.gid_tbl_len() {
                     let gid = self
                         .query_gid(port_num, gid_index as u32)
@@ -589,13 +591,13 @@ impl DeviceContext {
 }
 
 impl DeviceInfo for DeviceContext {
-    fn name(&self) -> Option<String> {
+    fn name(&self) -> String {
         unsafe {
             let name = ibv_get_device_name((*self.context).device);
             if name.is_null() {
-                None
+                String::new()
             } else {
-                Some(String::from_utf8_lossy(CStr::from_ptr(name).to_bytes()).to_string())
+                String::from_utf8_lossy(CStr::from_ptr(name).to_bytes()).to_string()
             }
         }
     }

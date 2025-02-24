@@ -208,7 +208,7 @@ impl Device<'_> {
 /// Trait for common device information access
 pub trait DeviceInfo {
     /// Returns the name of the device, for example, `mlx5_0`
-    fn name(&self) -> Option<String>;
+    fn name(&self) -> String;
 
     /// Returns the GUID of the device
     fn guid(&self) -> Guid;
@@ -218,13 +218,13 @@ pub trait DeviceInfo {
 }
 
 impl DeviceInfo for Device<'_> {
-    fn name(&self) -> Option<String> {
+    fn name(&self) -> String {
         unsafe {
             let name = ibv_get_device_name(self.device);
             if name.is_null() {
-                None
+                String::new()
             } else {
-                Some(String::from_utf8_lossy(CStr::from_ptr(name).to_bytes()).to_string())
+                String::from_utf8_lossy(CStr::from_ptr(name).to_bytes()).to_string()
             }
         }
     }

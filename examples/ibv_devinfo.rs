@@ -55,7 +55,7 @@ fn device_to_tree(device: &Device) -> Tree<String> {
 
 // Helper to build the actual tree structure
 fn build_device_tree(device: &Device) -> Tree<String> {
-    let mut device_tree = Tree::new(format!("hca_id: {}", device.name().unwrap()));
+    let mut device_tree = Tree::new(format!("hca_id: {}", device.name()));
 
     let ctx = device.open().unwrap();
     let attr = ctx.query_device().unwrap();

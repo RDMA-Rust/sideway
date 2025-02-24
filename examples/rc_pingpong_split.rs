@@ -143,7 +143,7 @@ impl PingPongContext {
     fn build(device: &Device, size: u32, rx_depth: u32, ib_port: u8, use_ts: bool) -> anyhow::Result<PingPongContext> {
         let context = device
             .open()
-            .unwrap_or_else(|_| panic!("Couldn't get context for {}", device.name().unwrap()));
+            .unwrap_or_else(|_| panic!("Couldn't get context for {}", device.name()));
 
         let attr = context.query_device().unwrap();
 
@@ -381,7 +381,7 @@ fn main() -> anyhow::Result<()> {
     let device = match args.ib_dev {
         Some(ib_dev) => device_list
             .iter()
-            .find(|dev| dev.name().unwrap().eq(&ib_dev))
+            .find(|dev| dev.name().eq(&ib_dev))
             .unwrap_or_else(|| panic!("IB device {ib_dev} not found")),
         None => device_list.iter().next().expect("No IB device found"),
     };
