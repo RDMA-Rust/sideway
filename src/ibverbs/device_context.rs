@@ -246,7 +246,7 @@ impl PortSpeed {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum LinkLayer {
     Unspecified = IBV_LINK_LAYER_UNSPECIFIED,
-    Infiniband = IBV_LINK_LAYER_INFINIBAND,
+    InfiniBand = IBV_LINK_LAYER_INFINIBAND,
     Ethernet = IBV_LINK_LAYER_ETHERNET,
 }
 
@@ -254,7 +254,7 @@ impl From<u8> for LinkLayer {
     fn from(link: u8) -> Self {
         match link {
             IBV_LINK_LAYER_UNSPECIFIED => LinkLayer::Unspecified,
-            IBV_LINK_LAYER_INFINIBAND => LinkLayer::Infiniband,
+            IBV_LINK_LAYER_INFINIBAND => LinkLayer::InfiniBand,
             IBV_LINK_LAYER_ETHERNET => LinkLayer::Ethernet,
             _ => panic!("Unknown link layer value: {link}"),
         }
@@ -517,7 +517,7 @@ impl DeviceContext {
                         .query_gid_type(port_num, gid_index as u32)
                         .map_err(QueryGidTableErrorKind::QueryGid)?
                     {
-                        IBV_GID_TYPE_SYSFS_IB_ROCE_V1 if port_attr.link_layer() == LinkLayer::Infiniband => {
+                        IBV_GID_TYPE_SYSFS_IB_ROCE_V1 if port_attr.link_layer() == LinkLayer::InfiniBand => {
                             IBV_GID_TYPE_IB
                         },
                         IBV_GID_TYPE_SYSFS_IB_ROCE_V1 if port_attr.link_layer() == LinkLayer::Ethernet => {
@@ -693,7 +693,7 @@ mod tests {
     #[test]
     fn test_link_layer_conversion() {
         assert_eq!(LinkLayer::from(IBV_LINK_LAYER_UNSPECIFIED), LinkLayer::Unspecified);
-        assert_eq!(LinkLayer::from(IBV_LINK_LAYER_INFINIBAND), LinkLayer::Infiniband);
+        assert_eq!(LinkLayer::from(IBV_LINK_LAYER_INFINIBAND), LinkLayer::InfiniBand);
         assert_eq!(LinkLayer::from(IBV_LINK_LAYER_ETHERNET), LinkLayer::Ethernet);
     }
 

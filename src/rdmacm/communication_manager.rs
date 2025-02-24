@@ -92,7 +92,7 @@ pub struct ConnectionParameter(rdma_conn_param);
 pub enum PortSpace {
     /// Provides for any InfiniBand services (UD, UC, RC, XRC, etc.).
     InfiniBand = rdma_port_space::RDMA_PS_IB as isize,
-    IpOverInfiniband = rdma_port_space::RDMA_PS_IPOIB as isize,
+    IpOverInfiniBand = rdma_port_space::RDMA_PS_IPOIB as isize,
     /// Provides reliable, connection-oriented QP communication. Unlike TCP, the RDMA port space
     /// provides message, not stream, based communication. In other words, this would create a
     /// [`QueuePair`] for [`ReliableConnection`].
