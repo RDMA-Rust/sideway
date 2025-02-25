@@ -15,7 +15,7 @@ use rdma_mummy_sys::{
 use serde::{Deserialize, Serialize};
 
 use super::address::{Gid, GidEntry};
-use super::completion::{CompletionChannel, CompletionQueueBuilder};
+use super::completion::{CompletionChannel, CompletionQueueBuilder, CreateCompletionChannelError};
 use super::device::{DeviceInfo, TransportType};
 use super::protection_domain::ProtectionDomain;
 
@@ -417,7 +417,7 @@ impl DeviceContext {
         }))
     }
 
-    pub fn create_comp_channel(&self) -> Result<CompletionChannel, String> {
+    pub fn create_comp_channel(&self) -> Result<CompletionChannel, CreateCompletionChannelError> {
         CompletionChannel::new(self)
     }
 
