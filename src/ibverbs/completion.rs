@@ -1,7 +1,7 @@
 use std::num::NonZeroU32;
 use std::os::raw::c_void;
-use std::ptr;
 use std::ptr::NonNull;
+use std::{io, ptr};
 use std::{marker::PhantomData, mem::MaybeUninit};
 
 use bitmask_enum::bitmask;
@@ -13,6 +13,30 @@ use rdma_mummy_sys::{
     ibv_poll_cq_attr, ibv_start_poll, ibv_wc, ibv_wc_opcode, ibv_wc_read_byte_len, ibv_wc_read_completion_ts,
     ibv_wc_read_opcode, ibv_wc_read_vendor_err, ibv_wc_status,
 };
+
+#[derive(Debug, thiserror::Error)]
+#[error("failed to create completion channel")]
+#[non_exhaustive]
+pub struct CreateCompletionChannelError(#[from] pub CreateCompletionChannelErrorKind);
+
+#[derive(Debug, thiserror::Error)]
+#[error(transparent)]
+#[non_exhaustive]
+pub enum CreateCompletionChannelErrorKind {
+    Ibverbs(#[from] io::Error),
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("failed to create completion queue")]
+#[non_exhaustive]
+pub struct CreateCompletionQueueError(#[from] pub CreateCompletionQueueErrorKind);
+
+#[derive(Debug, thiserror::Error)]
+#[error(transparent)]
+#[non_exhaustive]
+pub enum CreateCompletionQueueErrorKind {
+    Ibverbs(#[from] io::Error),
+}
 
 #[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -168,15 +192,19 @@ impl Drop for CompletionChannel<'_> {
 }
 
 impl<'res> CompletionChannel<'res> {
-    pub fn new<'ctx>(dev_ctx: &'ctx DeviceContext) -> Result<CompletionChannel<'res>, String>
+    pub fn new<'ctx>(dev_ctx: &'ctx DeviceContext) -> Result<CompletionChannel<'res>, CreateCompletionChannelError>
     where
         'ctx: 'res,
     {
         let comp_channel = unsafe { ibv_create_comp_channel(dev_ctx.context) };
-        Ok(CompletionChannel {
-            channel: NonNull::new(comp_channel).ok_or(String::from("ibv_create_comp_channel failed"))?,
-            _phantom: PhantomData,
-        })
+        if comp_channel.is_null() {
+            Err(CreateCompletionChannelErrorKind::Ibverbs(io::Error::last_os_error()).into())
+        } else {
+            Ok(CompletionChannel {
+                channel: unsafe { NonNull::new_unchecked(comp_channel) },
+                _phantom: PhantomData,
+            })
+        }
     }
 }
 
@@ -351,21 +379,24 @@ impl<'res> CompletionQueueBuilder<'res> {
     // TODO(fuji): set various attributes
 
     // build extended cq
-    pub fn build_ex(&self) -> Result<ExtendedCompletionQueue<'res>, String> {
+    pub fn build_ex(&self) -> Result<ExtendedCompletionQueue<'res>, CreateCompletionQueueError> {
         // create a copy of init_attr since ibv_create_cq_ex requires a mutable pointer to it
         let mut init_attr = self.init_attr;
 
         let cq_ex = unsafe { ibv_create_cq_ex(self.dev_ctx.context, &mut init_attr as *mut _) };
-
-        Ok(ExtendedCompletionQueue {
-            cq_ex: NonNull::new(cq_ex).ok_or(String::from("ibv_create_cq_ex failed"))?,
-            // associate the lifetime of dev_ctx & comp_channel with CQ
-            _phantom: PhantomData,
-        })
+        if cq_ex.is_null() {
+            Err(CreateCompletionQueueErrorKind::Ibverbs(io::Error::last_os_error()).into())
+        } else {
+            Ok(ExtendedCompletionQueue {
+                cq_ex: unsafe { NonNull::new_unchecked(cq_ex) },
+                // associate the lifetime of dev_ctx & comp_channel with CQ
+                _phantom: PhantomData,
+            })
+        }
     }
 
     // build basic cq
-    pub fn build(&self) -> Result<BasicCompletionQueue<'res>, String> {
+    pub fn build(&self) -> Result<BasicCompletionQueue<'res>, CreateCompletionQueueError> {
         let cq = unsafe {
             ibv_create_cq(
                 self.dev_ctx.context,
@@ -375,12 +406,17 @@ impl<'res> CompletionQueueBuilder<'res> {
                 self.init_attr.comp_vector as _,
             )
         };
-        Ok(BasicCompletionQueue {
-            cq: NonNull::new(cq).ok_or(String::from("ibv_create_cq failed"))?,
-            poll_batch: unsafe { NonZeroU32::new(32).unwrap_unchecked() },
-            // associate the lifetime of dev_ctx & comp_channel with CQ
-            _phantom: PhantomData,
-        })
+
+        if cq.is_null() {
+            Err(CreateCompletionQueueErrorKind::Ibverbs(io::Error::last_os_error()).into())
+        } else {
+            Ok(BasicCompletionQueue {
+                cq: unsafe { NonNull::new_unchecked(cq) },
+                poll_batch: unsafe { NonZeroU32::new(32).unwrap_unchecked() },
+                // associate the lifetime of dev_ctx & comp_channel with CQ
+                _phantom: PhantomData,
+            })
+        }
     }
 }
 
