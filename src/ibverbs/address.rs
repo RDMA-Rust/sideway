@@ -69,7 +69,7 @@ impl Gid {
 }
 
 #[repr(u32)]
-#[derive(PartialEq, Eq, Debug)]
+#[derive(PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub enum GidType {
     InfiniBand = IBV_GID_TYPE_IB,
     RoceV1 = IBV_GID_TYPE_ROCE_V1,
