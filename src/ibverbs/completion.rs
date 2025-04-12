@@ -38,6 +38,15 @@ pub enum CreateCompletionQueueErrorKind {
     Ibverbs(#[from] io::Error),
 }
 
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum PollCompletionQueueError {
+    #[error("poll completion queue failed")]
+    Ibverbs(#[from] io::Error),
+    #[error("completion queue is empty")]
+    CompletionQueueEmpty,
+}
+
 #[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WorkCompletionStatus {
@@ -242,7 +251,7 @@ impl CompletionQueue for BasicCompletionQueue<'_> {
 }
 
 impl BasicCompletionQueue<'_> {
-    pub fn start_poll(&self) -> Result<BasicPoller<'_>, String> {
+    pub fn start_poll(&self) -> Result<BasicPoller<'_>, PollCompletionQueueError> {
         let mut cqes = Vec::<ibv_wc>::with_capacity(self.poll_batch.get() as _);
 
         let ret = unsafe {
@@ -255,8 +264,8 @@ impl BasicCompletionQueue<'_> {
 
         unsafe {
             match ret {
-                0 => Err("no valid cqes".to_string()),
-                err if err < 0 => Err(format!("ibv_poll_cq failed, ret={err}")),
+                0 => Err(PollCompletionQueueError::CompletionQueueEmpty),
+                err if err < 0 => Err(PollCompletionQueueError::Ibverbs(io::Error::from_raw_os_error(-err))),
                 res => Ok(BasicPoller {
                     cq: self.cq(),
                     wcs: {
@@ -306,7 +315,7 @@ impl CompletionQueue for ExtendedCompletionQueue<'_> {
 }
 
 impl ExtendedCompletionQueue<'_> {
-    pub fn start_poll(&self) -> Result<ExtendedPoller<'_>, String> {
+    pub fn start_poll(&self) -> Result<ExtendedPoller<'_>, PollCompletionQueueError> {
         let ret = unsafe {
             ibv_start_poll(
                 self.cq_ex.as_ptr(),
@@ -320,7 +329,8 @@ impl ExtendedCompletionQueue<'_> {
                 is_first: true,
                 _phantom: PhantomData,
             }),
-            err => Err(format!("ibv_start_poll failed, ret={err}")),
+            libc::ENOENT => Err(PollCompletionQueueError::CompletionQueueEmpty),
+            err => Err(PollCompletionQueueError::Ibverbs(io::Error::from_raw_os_error(err))),
         }
     }
 }
@@ -626,7 +636,7 @@ pub enum GenericPoller<'cq> {
 }
 
 impl GenericCompletionQueue<'_> {
-    pub fn start_poll(&self) -> Result<GenericPoller<'_>, String> {
+    pub fn start_poll(&self) -> Result<GenericPoller<'_>, PollCompletionQueueError> {
         match self {
             GenericCompletionQueue::Basic(cq) => cq.start_poll().map(GenericPoller::Basic),
             GenericCompletionQueue::Extended(cq) => cq.start_poll().map(GenericPoller::Extended),
