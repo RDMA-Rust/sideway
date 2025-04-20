@@ -5,6 +5,7 @@ use std::{io, ptr};
 use std::{marker::PhantomData, mem::MaybeUninit};
 
 use bitmask_enum::bitmask;
+use likely_stable::{likely, unlikely};
 
 use super::device_context::DeviceContext;
 use rdma_mummy_sys::{
@@ -592,7 +593,7 @@ impl<'cq> Iterator for ExtendedPoller<'cq> {
     type Item = ExtendedWorkCompletion<'cq>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.is_first {
+        if unlikely(self.is_first) {
             self.is_first = false;
             Some(ExtendedWorkCompletion {
                 cq: self.cq,
@@ -601,13 +602,13 @@ impl<'cq> Iterator for ExtendedPoller<'cq> {
         } else {
             let ret = unsafe { ibv_next_poll(self.cq.as_ptr()) };
 
-            if ret != 0 {
-                None
-            } else {
+            if likely(ret == 0) {
                 Some(ExtendedWorkCompletion {
                     cq: self.cq,
                     _phantom: PhantomData,
                 })
+            } else {
+                None
             }
         }
     }
@@ -636,6 +637,7 @@ pub enum GenericPoller<'cq> {
 }
 
 impl GenericCompletionQueue<'_> {
+    #[inline]
     pub fn start_poll(&self) -> Result<GenericPoller<'_>, PollCompletionQueueError> {
         match self {
             GenericCompletionQueue::Basic(cq) => cq.start_poll().map(GenericPoller::Basic),
@@ -647,6 +649,7 @@ impl GenericCompletionQueue<'_> {
 impl<'cq> Iterator for GenericPoller<'cq> {
     type Item = GenericWorkCompletion<'cq>;
 
+    #[inline]
     fn next(&mut self) -> Option<Self::Item> {
         match self {
             GenericPoller::Basic(poller) => poller.next().map(GenericWorkCompletion::Basic),
