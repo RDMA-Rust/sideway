@@ -27,7 +27,7 @@ use super::{
 #[non_exhaustive]
 pub enum ModifyQueuePairError {
     #[error("modify queue pair failed")]
-    GenericError(#[from] io::Error),
+    Ibverbs(#[from] io::Error),
     #[error("invalid transition from {cur_state:?} to {next_state:?}")]
     InvalidTransition {
         cur_state: QueuePairState,
@@ -60,12 +60,25 @@ pub enum ModifyQueuePairError {
 #[non_exhaustive]
 pub enum PostSendError {
     #[error("post send failed")]
-    GenericError(#[from] io::Error),
+    Ibverbs(#[from] io::Error),
     #[error("invalid value provided in work request")]
     InvalidWorkRequest(#[source] io::Error),
     #[error("invalid value provided in queue pair")]
     InvalidQueuePair(#[source] io::Error),
     #[error("send queue is full or not enough resources to complete this operation")]
+    NotEnoughResources(#[source] io::Error),
+}
+
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum PostRecvError {
+    #[error("post receive failed")]
+    Ibverbs(#[from] io::Error),
+    #[error("invalid value provided in work request")]
+    InvalidWorkRequest(#[source] io::Error),
+    #[error("invalid value provided in queue pair")]
+    InvalidQueuePair(#[source] io::Error),
+    #[error("receive queue is full or not enough resources to complete this operation")]
     NotEnoughResources(#[source] io::Error),
 }
 
@@ -230,7 +243,7 @@ pub trait QueuePair {
                         attr_mask_check(attr.attr_mask, self.state(), self.state())
                     };
                     match err {
-                        Ok(()) => Err(ModifyQueuePairError::GenericError(io::Error::from_raw_os_error(
+                        Ok(()) => Err(ModifyQueuePairError::Ibverbs(io::Error::from_raw_os_error(
                             libc::EINVAL,
                         ))),
                         Err(err) => Err(err),
@@ -246,7 +259,7 @@ pub trait QueuePair {
                     gid: attr.attr.ah_attr.grh.dgid.into(),
                     source: io::Error::from_raw_os_error(libc::ENETUNREACH),
                 }),
-                err => Err(ModifyQueuePairError::GenericError(io::Error::from_raw_os_error(err))),
+                err => Err(ModifyQueuePairError::Ibverbs(io::Error::from_raw_os_error(err))),
             }
         }
     }
@@ -1002,7 +1015,7 @@ impl PostSendGuard for BasicPostSendGuard<'_> {
             libc::EFAULT => Err(PostSendError::InvalidQueuePair(io::Error::from_raw_os_error(
                 libc::EFAULT,
             ))),
-            err => Err(PostSendError::GenericError(io::Error::from_raw_os_error(err))),
+            err => Err(PostSendError::Ibverbs(io::Error::from_raw_os_error(err))),
         }
     }
 }
@@ -1103,7 +1116,7 @@ impl PostSendGuard for ExtendedPostSendGuard<'_> {
             libc::EFAULT => Err(PostSendError::InvalidQueuePair(io::Error::from_raw_os_error(
                 libc::EFAULT,
             ))),
-            err => Err(PostSendError::GenericError(io::Error::from_raw_os_error(err))),
+            err => Err(PostSendError::Ibverbs(io::Error::from_raw_os_error(err))),
         }
     }
 }
@@ -1166,7 +1179,7 @@ impl<'qp> PostRecvGuard<'qp> {
         RecvWorkRequestHandle { guard: self }
     }
 
-    pub fn post(mut self) -> Result<(), String> {
+    pub fn post(mut self) -> Result<(), PostRecvError> {
         let mut sge_index = 0;
 
         for i in 0..self.wrs.len() {
@@ -1188,7 +1201,16 @@ impl<'qp> PostRecvGuard<'qp> {
         let ret = unsafe { ibv_post_recv(self.qp.as_ptr(), self.wrs.as_mut_ptr(), &mut bad_wr) };
         match ret {
             0 => Ok(()),
-            err => Err(format!("ibv_post_recv failed, ret={err}")),
+            libc::EINVAL => Err(PostRecvError::InvalidWorkRequest(io::Error::from_raw_os_error(
+                libc::EINVAL,
+            ))),
+            libc::ENOMEM => Err(PostRecvError::NotEnoughResources(io::Error::from_raw_os_error(
+                libc::ENOMEM,
+            ))),
+            libc::EFAULT => Err(PostRecvError::InvalidQueuePair(io::Error::from_raw_os_error(
+                libc::EFAULT,
+            ))),
+            err => Err(PostRecvError::Ibverbs(io::Error::from_raw_os_error(err))),
         }
     }
 }
@@ -1361,5 +1383,97 @@ impl<'qp> From<ExtendedQueuePair<'qp>> for GenericQueuePair<'qp> {
     /// ```
     fn from(qp: ExtendedQueuePair<'qp>) -> Self {
         GenericQueuePair::Extended(qp)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ibverbs::address::GidType;
+    use crate::ibverbs::device;
+
+    #[test]
+    fn test_post_recv_errors() -> Result<(), Box<dyn std::error::Error>> {
+        let device_list = device::DeviceList::new()?;
+        match device_list.get(0) {
+            Some(device) => {
+                let ctx = device.open()?;
+
+                let pd = ctx.alloc_pd()?;
+                let memory = [1, 2, 3, 4];
+                let mr_handle = memory.as_ptr() as usize;
+                let mr = unsafe {
+                    pd.reg_mr(mr_handle, 16, AccessFlags::LocalWrite | AccessFlags::RemoteWrite)
+                        .unwrap()
+                };
+
+                let cq = ctx.create_cq_builder().setup_cqe(2).build_ex()?;
+
+                let mut qp = pd
+                    .create_qp_builder()
+                    .setup_send_cq(&cq)
+                    .setup_recv_cq(&cq)
+                    .setup_max_recv_wr(1)
+                    .build()?;
+
+                let mut guard = qp.start_post_recv();
+                unsafe {
+                    let handle = guard.construct_wr(1);
+                    handle.setup_sge(mr.lkey(), mr.get_ptr() as u64, 1);
+                    match guard.post() {
+                        Err(PostRecvError::InvalidWorkRequest(_)) => {},
+                        other => panic!("Expected InvalidWorkRequest error, got: {:?}", other),
+                    }
+                }
+
+                let mut attr = QueuePairAttribute::new();
+                attr.setup_state(QueuePairState::Init)
+                    .setup_pkey_index(0)
+                    .setup_port(1)
+                    .setup_access_flags(AccessFlags::LocalWrite | AccessFlags::RemoteWrite);
+                qp.modify(&attr)?;
+
+                let mut attr = QueuePairAttribute::new();
+                attr.setup_state(QueuePairState::ReadyToReceive)
+                    .setup_path_mtu(Mtu::Mtu1024)
+                    .setup_dest_qp_num(1024)
+                    .setup_rq_psn(1024)
+                    .setup_max_dest_read_atomic(0)
+                    .setup_min_rnr_timer(0);
+
+                // setup address vector
+                let mut ah_attr = AddressHandleAttribute::new();
+                let gid_entries = ctx.query_gid_table().unwrap();
+                let gid = gid_entries
+                    .iter()
+                    .find(|&&gid| !gid.gid().is_unicast_link_local() || gid.gid_type() == GidType::RoceV1)
+                    .unwrap();
+
+                ah_attr
+                    .setup_dest_lid(1)
+                    .setup_port(1)
+                    .setup_service_level(1)
+                    .setup_grh_src_gid_index(gid.gid_index().try_into().unwrap())
+                    .setup_grh_dest_gid(&gid.gid())
+                    .setup_grh_hop_limit(64);
+                attr.setup_address_vector(&ah_attr);
+                qp.modify(&attr)?;
+
+                let mut guard = qp.start_post_recv();
+                for i in 0..128 {
+                    unsafe {
+                        let handle = guard.construct_wr(i);
+                        handle.setup_sge(mr.lkey(), mr.get_ptr() as u64, 1);
+                    }
+                }
+                match guard.post() {
+                    Err(PostRecvError::NotEnoughResources(_)) => {},
+                    other => panic!("Expected NotEnoughResources error, got: {:?}", other),
+                }
+
+                Ok(())
+            },
+            None => Ok(()),
+        }
     }
 }
