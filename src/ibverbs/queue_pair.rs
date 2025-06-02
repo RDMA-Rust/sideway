@@ -69,6 +69,19 @@ pub enum PostSendError {
     NotEnoughResources(#[source] io::Error),
 }
 
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum PostRecvError {
+    #[error("post receive failed")]
+    GenericError(#[from] io::Error),
+    #[error("invalid value provided in work request")]
+    InvalidWorkRequest(#[source] io::Error),
+    #[error("invalid value provided in queue pair")]
+    InvalidQueuePair(#[source] io::Error),
+    #[error("receive queue is full or not enough resources to complete this operation")]
+    NotEnoughResources(#[source] io::Error),
+}
+
 #[repr(u32)]
 #[derive(Debug, Clone, Copy)]
 pub enum QueuePairType {
@@ -1078,6 +1091,7 @@ pub struct ExtendedPostSendGuard<'qp> {
 }
 
 impl PostSendGuard for ExtendedPostSendGuard<'_> {
+    #[inline]
     fn construct_wr(&mut self, wr_id: u64, wr_flags: WorkRequestFlags) -> WorkRequestHandle<'_, Self> {
         unsafe {
             self.qp_ex.as_mut().wr_id = wr_id;
@@ -1086,6 +1100,7 @@ impl PostSendGuard for ExtendedPostSendGuard<'_> {
         WorkRequestHandle { guard: self }
     }
 
+    #[inline]
     fn post(self) -> Result<(), PostSendError> {
         let ret: i32 = unsafe { ibv_wr_complete(self.qp_ex.as_ptr()) };
 
@@ -1109,18 +1124,22 @@ impl PostSendGuard for ExtendedPostSendGuard<'_> {
 }
 
 impl private_traits::PostSendGuard for ExtendedPostSendGuard<'_> {
+    #[inline]
     fn setup_send(&mut self) {
         unsafe { ibv_wr_send(self.qp_ex.as_ptr()) };
     }
 
+    #[inline]
     fn setup_write(&mut self, rkey: u32, remote_addr: u64) {
         unsafe { ibv_wr_rdma_write(self.qp_ex.as_ptr(), rkey, remote_addr) };
     }
 
+    #[inline]
     fn setup_inline_data(&mut self, buf: &[u8]) {
         unsafe { ibv_wr_set_inline_data(self.qp_ex.as_ptr(), buf.as_ptr() as _, buf.len()) }
     }
 
+    #[inline]
     fn setup_inline_data_list(&mut self, bufs: &[IoSlice<'_>]) {
         let mut buf_list = Vec::with_capacity(bufs.len());
 
@@ -1132,10 +1151,12 @@ impl private_traits::PostSendGuard for ExtendedPostSendGuard<'_> {
         unsafe { ibv_wr_set_inline_data_list(self.qp_ex.as_ptr(), buf_list.len(), buf_list.as_ptr()) };
     }
 
+    #[inline]
     unsafe fn setup_sge(&mut self, lkey: u32, addr: u64, length: u32) {
         ibv_wr_set_sge(self.qp_ex.as_ptr(), lkey, addr, length);
     }
 
+    #[inline]
     unsafe fn setup_sge_list(&mut self, sg_list: &[ibv_sge]) {
         ibv_wr_set_sge_list(self.qp_ex.as_ptr(), sg_list.len(), sg_list.as_ptr());
     }
@@ -1166,7 +1187,7 @@ impl<'qp> PostRecvGuard<'qp> {
         RecvWorkRequestHandle { guard: self }
     }
 
-    pub fn post(mut self) -> Result<(), String> {
+    pub fn post(mut self) -> Result<(), PostRecvError> {
         let mut sge_index = 0;
 
         for i in 0..self.wrs.len() {
@@ -1188,7 +1209,16 @@ impl<'qp> PostRecvGuard<'qp> {
         let ret = unsafe { ibv_post_recv(self.qp.as_ptr(), self.wrs.as_mut_ptr(), &mut bad_wr) };
         match ret {
             0 => Ok(()),
-            err => Err(format!("ibv_post_recv failed, ret={err}")),
+            libc::EINVAL => Err(PostRecvError::InvalidWorkRequest(io::Error::from_raw_os_error(
+                libc::EINVAL,
+            ))),
+            libc::ENOMEM => Err(PostRecvError::NotEnoughResources(io::Error::from_raw_os_error(
+                libc::ENOMEM,
+            ))),
+            libc::EFAULT => Err(PostRecvError::InvalidQueuePair(io::Error::from_raw_os_error(
+                libc::EFAULT,
+            ))),
+            err => Err(PostRecvError::GenericError(io::Error::from_raw_os_error(err))),
         }
     }
 }
@@ -1267,6 +1297,7 @@ pub enum GenericPostSendGuard<'g> {
 }
 
 impl PostSendGuard for GenericPostSendGuard<'_> {
+    #[inline]
     fn construct_wr(&mut self, wr_id: u64, wr_flags: WorkRequestFlags) -> WorkRequestHandle<'_, Self> {
         match self {
             GenericPostSendGuard::Basic(guard) => {
@@ -1280,6 +1311,7 @@ impl PostSendGuard for GenericPostSendGuard<'_> {
         }
     }
 
+    #[inline]
     fn post(self) -> Result<(), PostSendError> {
         match self {
             GenericPostSendGuard::Basic(guard) => guard.post(),
@@ -1289,6 +1321,7 @@ impl PostSendGuard for GenericPostSendGuard<'_> {
 }
 
 impl private_traits::PostSendGuard for GenericPostSendGuard<'_> {
+    #[inline]
     fn setup_send(&mut self) {
         match self {
             GenericPostSendGuard::Basic(guard) => guard.setup_send(),
@@ -1296,6 +1329,7 @@ impl private_traits::PostSendGuard for GenericPostSendGuard<'_> {
         }
     }
 
+    #[inline]
     fn setup_write(&mut self, rkey: u32, remote_addr: u64) {
         match self {
             GenericPostSendGuard::Basic(guard) => guard.setup_write(rkey, remote_addr),
@@ -1303,6 +1337,7 @@ impl private_traits::PostSendGuard for GenericPostSendGuard<'_> {
         }
     }
 
+    #[inline]
     fn setup_inline_data(&mut self, buf: &[u8]) {
         match self {
             GenericPostSendGuard::Basic(guard) => guard.setup_inline_data(buf),
@@ -1310,6 +1345,7 @@ impl private_traits::PostSendGuard for GenericPostSendGuard<'_> {
         }
     }
 
+    #[inline]
     fn setup_inline_data_list(&mut self, bufs: &[IoSlice<'_>]) {
         match self {
             GenericPostSendGuard::Basic(guard) => guard.setup_inline_data_list(bufs),
@@ -1317,6 +1353,7 @@ impl private_traits::PostSendGuard for GenericPostSendGuard<'_> {
         }
     }
 
+    #[inline]
     unsafe fn setup_sge(&mut self, lkey: u32, addr: u64, length: u32) {
         match self {
             GenericPostSendGuard::Basic(guard) => guard.setup_sge(lkey, addr, length),
@@ -1324,6 +1361,7 @@ impl private_traits::PostSendGuard for GenericPostSendGuard<'_> {
         }
     }
 
+    #[inline]
     unsafe fn setup_sge_list(&mut self, sg_list: &[ibv_sge]) {
         match self {
             GenericPostSendGuard::Basic(guard) => guard.setup_sge_list(sg_list),

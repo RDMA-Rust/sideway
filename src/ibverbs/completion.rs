@@ -5,6 +5,7 @@ use std::{io, ptr};
 use std::{marker::PhantomData, mem::MaybeUninit};
 
 use bitmask_enum::bitmask;
+use likely_stable::{likely, unlikely};
 
 use super::device_context::DeviceContext;
 use rdma_mummy_sys::{
@@ -36,6 +37,15 @@ pub struct CreateCompletionQueueError(#[from] pub CreateCompletionQueueErrorKind
 #[non_exhaustive]
 pub enum CreateCompletionQueueErrorKind {
     Ibverbs(#[from] io::Error),
+}
+
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum PollCompletionQueueError {
+    #[error("poll completion queue failed")]
+    Ibverbs(#[from] io::Error),
+    #[error("completion queue is empty")]
+    CompletionQueueEmpty,
 }
 
 #[repr(u32)]
@@ -242,7 +252,7 @@ impl CompletionQueue for BasicCompletionQueue<'_> {
 }
 
 impl BasicCompletionQueue<'_> {
-    pub fn start_poll(&self) -> Result<BasicPoller<'_>, String> {
+    pub fn start_poll(&self) -> Result<BasicPoller<'_>, PollCompletionQueueError> {
         let mut cqes = Vec::<ibv_wc>::with_capacity(self.poll_batch.get() as _);
 
         let ret = unsafe {
@@ -255,8 +265,8 @@ impl BasicCompletionQueue<'_> {
 
         unsafe {
             match ret {
-                0 => Err("no valid cqes".to_string()),
-                err if err < 0 => Err(format!("ibv_poll_cq failed, ret={err}")),
+                0 => Err(PollCompletionQueueError::CompletionQueueEmpty),
+                err if err < 0 => Err(PollCompletionQueueError::Ibverbs(io::Error::from_raw_os_error(-err))),
                 res => Ok(BasicPoller {
                     cq: self.cq(),
                     wcs: {
@@ -306,7 +316,7 @@ impl CompletionQueue for ExtendedCompletionQueue<'_> {
 }
 
 impl ExtendedCompletionQueue<'_> {
-    pub fn start_poll(&self) -> Result<ExtendedPoller<'_>, String> {
+    pub fn start_poll(&self) -> Result<ExtendedPoller<'_>, PollCompletionQueueError> {
         let ret = unsafe {
             ibv_start_poll(
                 self.cq_ex.as_ptr(),
@@ -320,7 +330,8 @@ impl ExtendedCompletionQueue<'_> {
                 is_first: true,
                 _phantom: PhantomData,
             }),
-            err => Err(format!("ibv_start_poll failed, ret={err}")),
+            libc::ENOENT => Err(PollCompletionQueueError::CompletionQueueEmpty),
+            err => Err(PollCompletionQueueError::Ibverbs(io::Error::from_raw_os_error(err))),
         }
     }
 }
@@ -582,7 +593,7 @@ impl<'cq> Iterator for ExtendedPoller<'cq> {
     type Item = ExtendedWorkCompletion<'cq>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.is_first {
+        if unlikely(self.is_first) {
             self.is_first = false;
             Some(ExtendedWorkCompletion {
                 cq: self.cq,
@@ -591,13 +602,13 @@ impl<'cq> Iterator for ExtendedPoller<'cq> {
         } else {
             let ret = unsafe { ibv_next_poll(self.cq.as_ptr()) };
 
-            if ret != 0 {
-                None
-            } else {
+            if likely(ret == 0) {
                 Some(ExtendedWorkCompletion {
                     cq: self.cq,
                     _phantom: PhantomData,
                 })
+            } else {
+                None
             }
         }
     }
@@ -626,7 +637,8 @@ pub enum GenericPoller<'cq> {
 }
 
 impl GenericCompletionQueue<'_> {
-    pub fn start_poll(&self) -> Result<GenericPoller<'_>, String> {
+    #[inline]
+    pub fn start_poll(&self) -> Result<GenericPoller<'_>, PollCompletionQueueError> {
         match self {
             GenericCompletionQueue::Basic(cq) => cq.start_poll().map(GenericPoller::Basic),
             GenericCompletionQueue::Extended(cq) => cq.start_poll().map(GenericPoller::Extended),
@@ -637,6 +649,7 @@ impl GenericCompletionQueue<'_> {
 impl<'cq> Iterator for GenericPoller<'cq> {
     type Item = GenericWorkCompletion<'cq>;
 
+    #[inline]
     fn next(&mut self) -> Option<Self::Item> {
         match self {
             GenericPoller::Basic(poller) => poller.next().map(GenericWorkCompletion::Basic),
