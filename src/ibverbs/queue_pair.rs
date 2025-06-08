@@ -24,8 +24,13 @@ use super::{
 };
 
 #[derive(Debug, thiserror::Error)]
+#[error(transparent)]
 #[non_exhaustive]
-pub enum ModifyQueuePairError {
+pub struct ModifyQueuePairError(#[from] pub ModifyQueuePairErrorKind);
+
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum ModifyQueuePairErrorKind {
     #[error("modify queue pair failed")]
     Ibverbs(#[from] io::Error),
     #[error("invalid transition from {cur_state:?} to {next_state:?}")]
@@ -243,23 +248,25 @@ pub trait QueuePair {
                         attr_mask_check(attr.attr_mask, self.state(), self.state())
                     };
                     match err {
-                        Ok(()) => Err(ModifyQueuePairError::Ibverbs(io::Error::from_raw_os_error(
-                            libc::EINVAL,
-                        ))),
+                        Ok(()) => {
+                            Err(ModifyQueuePairErrorKind::Ibverbs(io::Error::from_raw_os_error(libc::EINVAL)).into())
+                        },
                         Err(err) => Err(err),
                     }
                 },
-                libc::ETIMEDOUT => Err(ModifyQueuePairError::ResolveRouteTimedout {
+                libc::ETIMEDOUT => Err(ModifyQueuePairErrorKind::ResolveRouteTimedout {
                     sgid_index: attr.attr.ah_attr.grh.sgid_index,
                     gid: attr.attr.ah_attr.grh.dgid.into(),
                     source: io::Error::from_raw_os_error(libc::ETIMEDOUT),
-                }),
-                libc::ENETUNREACH => Err(ModifyQueuePairError::NetworkUnreachable {
+                }
+                .into()),
+                libc::ENETUNREACH => Err(ModifyQueuePairErrorKind::NetworkUnreachable {
                     sgid_index: attr.attr.ah_attr.grh.sgid_index,
                     gid: attr.attr.ah_attr.grh.dgid.into(),
                     source: io::Error::from_raw_os_error(libc::ENETUNREACH),
-                }),
-                err => Err(ModifyQueuePairError::Ibverbs(io::Error::from_raw_os_error(err))),
+                }
+                .into()),
+                err => Err(ModifyQueuePairErrorKind::Ibverbs(io::Error::from_raw_os_error(err)).into()),
             }
         }
     }
@@ -877,11 +884,12 @@ fn attr_mask_check(
     attr_mask: QueuePairAttributeMask, cur_state: QueuePairState, next_state: QueuePairState,
 ) -> Result<(), ModifyQueuePairError> {
     if !RC_QP_STATE_TABLE[cur_state as usize][next_state as usize].valid {
-        return Err(ModifyQueuePairError::InvalidTransition {
+        return Err(ModifyQueuePairErrorKind::InvalidTransition {
             cur_state,
             next_state,
             source: io::Error::from_raw_os_error(libc::EINVAL),
-        });
+        }
+        .into());
     }
 
     let required = RC_QP_STATE_TABLE[cur_state as usize][next_state as usize].required_mask;
@@ -891,13 +899,14 @@ fn attr_mask_check(
     if invalid.bits == 0 && needed.bits == 0 {
         Ok(())
     } else {
-        Err(ModifyQueuePairError::InvalidAttributeMask {
+        Err(ModifyQueuePairErrorKind::InvalidAttributeMask {
             cur_state,
             next_state,
             invalid,
             needed,
             source: io::Error::from_raw_os_error(libc::EINVAL),
-        })
+        }
+        .into())
     }
 }
 
