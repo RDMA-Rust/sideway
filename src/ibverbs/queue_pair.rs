@@ -24,6 +24,18 @@ use super::{
 };
 
 #[derive(Debug, thiserror::Error)]
+#[error("failed to create queue pair")]
+#[non_exhaustive]
+pub struct CreateQueuePairError(#[from] pub CreateQueuePairErrorKind);
+
+#[derive(Debug, thiserror::Error)]
+#[error(transparent)]
+#[non_exhaustive]
+pub enum CreateQueuePairErrorKind {
+    Ibverbs(#[from] io::Error),
+}
+
+#[derive(Debug, thiserror::Error)]
 #[error(transparent)]
 #[non_exhaustive]
 pub struct ModifyQueuePairError(#[from] pub ModifyQueuePairErrorKind);
@@ -712,7 +724,7 @@ impl<'res> QueuePairBuilder<'res> {
     }
 
     // build basic qp
-    pub fn build(&self) -> Result<BasicQueuePair<'res>, String> {
+    pub fn build(&self) -> Result<BasicQueuePair<'res>, CreateQueuePairError> {
         let qp = unsafe {
             ibv_create_qp(
                 self.init_attr.pd,
@@ -729,20 +741,21 @@ impl<'res> QueuePairBuilder<'res> {
         };
 
         Ok(BasicQueuePair {
-            qp: NonNull::new(qp).ok_or(format!("ibv_create_qp failed, {}", io::Error::last_os_error()))?,
+            qp: NonNull::new(qp)
+                .ok_or::<CreateQueuePairError>(CreateQueuePairErrorKind::Ibverbs(io::Error::last_os_error()).into())?,
             _phantom: PhantomData,
         })
     }
 
     // build extended qp
-    pub fn build_ex(&self) -> Result<ExtendedQueuePair<'res>, String> {
+    pub fn build_ex(&self) -> Result<ExtendedQueuePair<'res>, CreateQueuePairError> {
         let mut attr = self.init_attr;
 
         let qp = unsafe { ibv_create_qp_ex((*(attr.pd)).context, &mut attr) };
 
         Ok(ExtendedQueuePair {
             qp_ex: NonNull::new(unsafe { ibv_qp_to_qp_ex(qp) })
-                .ok_or(format!("ibv_create_qp_ex failed, {}", io::Error::last_os_error()))?,
+                .ok_or::<CreateQueuePairError>(CreateQueuePairErrorKind::Ibverbs(io::Error::last_os_error()).into())?,
             _phantom: PhantomData,
         })
     }
