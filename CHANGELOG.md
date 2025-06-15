@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0](https://github.com/RDMA-Rust/sideway/compare/v0.2.1...v0.3.0) - 2025-06-15
+
+### Added
+
+- use unwrap_uncheck in data path functions
+- *(ibverbs)* derive more attributes for GidType
+- *(address)* derive Serdes for GidType
+- *(ibverbs)* only provide unsafe interface for registering MR
+- remove debug configuration type
+- *(ibverbs)* improve Device and DeviceList implementation
+
+### Other
+
+- *(qp)* define CreateQueuePairError for create_qp
+- *(qp)* change ModifyQueuePairError to struct to align the error handling logic
+- *(qp)* define PostRecvError for post_recv
+- *(ibverbs)* define error type for poll cq
+- *(ibverbs)* define more error types for completion
+- *(ibverbs)* return String instead of Option<String> for device name
+- rename Infiniband to InfiniBand which is more formal
+- *(cargo)* bump thiserror to v2.0 and postcard to v1.1
+- replace lazy_static with std::sync::LazyLock
+- define more error types for DeviceContext
+
 ## [0.2.1](https://github.com/RDMA-Rust/sideway/compare/v0.2.0...v0.2.1) - 2025-02-09
 
 ### Added
