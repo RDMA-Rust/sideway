@@ -50,7 +50,7 @@ impl fmt::Display for Gid {
             if i > 0 && i % 2 == 0 {
                 write!(f, ":")?;
             }
-            write!(f, "{:02x}", byte)?;
+            write!(f, "{byte:02x}")?;
         }
         Ok(())
     }

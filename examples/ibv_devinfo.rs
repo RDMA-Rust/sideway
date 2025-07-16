@@ -80,7 +80,7 @@ fn build_device_tree(device: &Device) -> Tree<String> {
 
     // Add ports as subtrees
     for port_num in 1..(attr.phys_port_cnt() + 1) {
-        let mut port_tree = Tree::new(format!("port: {}", port_num));
+        let mut port_tree = Tree::new(format!("port: {port_num}"));
 
         let port_attr = ctx.query_port(port_num).unwrap();
 

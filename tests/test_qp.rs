@@ -37,7 +37,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .build()
             .unwrap();
 
-        println!("qp pointer is {:?}", qp);
+        println!("qp pointer is {qp:?}");
         // modify QP to INIT state
         let mut attr = QueuePairAttribute::new();
         attr.setup_state(QueuePairState::Init)

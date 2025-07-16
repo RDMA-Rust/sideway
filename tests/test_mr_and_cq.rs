@@ -21,7 +21,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         println!("MR is {:?}, lkey is {}, rkey is {}", mr, mr.lkey(), mr.rkey());
 
-        println!("CQ is {:?}", cq,);
+        println!("CQ is {cq:?}");
     }
 
     Ok(())

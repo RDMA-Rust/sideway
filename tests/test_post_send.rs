@@ -71,7 +71,7 @@ fn main(#[case] use_qp_ex: bool, #[case] use_cq_ex: bool) -> Result<(), Box<dyn 
             builder.build().unwrap().into()
         };
 
-        println!("qp pointer is {:?}", qp);
+        println!("qp pointer is {qp:?}");
         // modify QP to INIT state
         let mut attr = QueuePairAttribute::new();
         attr.setup_state(QueuePairState::Init)
@@ -172,7 +172,7 @@ fn main(#[case] use_qp_ex: bool, #[case] use_cq_ex: bool) -> Result<(), Box<dyn 
 
         unsafe {
             let slice = std::slice::from_raw_parts(mr.get_ptr() as *const u8, mr.region_len());
-            println!("Buffer contents: {:?}", slice);
+            println!("Buffer contents: {slice:?}");
         }
 
         // poll recv CQ for the completion
@@ -185,7 +185,7 @@ fn main(#[case] use_qp_ex: bool, #[case] use_cq_ex: bool) -> Result<(), Box<dyn 
 
         unsafe {
             let slice = std::slice::from_raw_parts(recv_mr.get_ptr() as *const u8, recv_mr.region_len());
-            println!("Recv Buffer contents: {:?}", slice);
+            println!("Recv Buffer contents: {slice:?}");
         }
     }
 
