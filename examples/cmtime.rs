@@ -417,7 +417,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .modify(Columns::first(), Alignment::left())
             .to_string();
 
-        println!("{}", table);
+        println!("{table}");
     } else {
         let id = CHANNEL.lock().unwrap().create_id(PortSpace::Tcp)?;
         id.bind_addr(SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), args.port))?;

@@ -70,7 +70,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with(style)
         .to_string();
 
-    println!("{}", table);
+    println!("{table}");
 
     Ok(())
 }

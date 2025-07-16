@@ -1444,7 +1444,7 @@ mod tests {
                     handle.setup_sge(mr.lkey(), mr.get_ptr() as u64, 1);
                     match guard.post() {
                         Err(PostRecvError::InvalidWorkRequest(_)) => {},
-                        other => panic!("Expected InvalidWorkRequest error, got: {:?}", other),
+                        other => panic!("Expected InvalidWorkRequest error, got: {other:?}"),
                     }
                 }
 
@@ -1490,7 +1490,7 @@ mod tests {
                 }
                 match guard.post() {
                     Err(PostRecvError::NotEnoughResources(_)) => {},
-                    other => panic!("Expected NotEnoughResources error, got: {:?}", other),
+                    other => panic!("Expected NotEnoughResources error, got: {other:?}"),
                 }
 
                 Ok(())

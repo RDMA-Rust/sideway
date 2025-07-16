@@ -531,8 +531,7 @@ impl DeviceContext {
 
                     let netdev = unsafe {
                         fs::read_to_string(format!(
-                            "/sys/class/infiniband/{}/ports/{}/gid_attrs/ndevs/{}",
-                            name, port_num, gid_index
+                            "/sys/class/infiniband/{name}/ports/{port_num}/gid_attrs/ndevs/{gid_index}",
                         ))
                         .unwrap_unchecked()
                         .trim_ascii_end()
