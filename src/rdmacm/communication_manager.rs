@@ -136,7 +136,7 @@ impl Event {
     /// To access the listener [`Identifier`] in case of a connect request,
     /// use the [`listener_id`] method instead.
     ///
-    /// [`listener_id`]: crate::cm::communication_manager::Event::listener_id
+    /// [`listener_id`]: crate::rdmacm::communication_manager::Event::listener_id
     ///
     pub fn cm_id(&self) -> Option<Arc<Identifier>> {
         self.cm_id.clone()
