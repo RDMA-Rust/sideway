@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.1](https://github.com/RDMA-Rust/sideway/compare/v0.3.0...v0.3.1) - 2025-07-19
+
+### Other
+
+- add documentation for queue pair and access flags
+- use variables directly in the `format!` string
+
 ## [0.3.0](https://github.com/RDMA-Rust/sideway/compare/v0.2.1...v0.3.0) - 2025-06-15
 
 ### Added
