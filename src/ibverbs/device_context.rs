@@ -1,3 +1,5 @@
+//! The device context is used for querying RDMA device attributes and creating the initial
+//! resources.
 use std::ffi::{CStr, CString};
 use std::fmt;
 use std::fs;
@@ -19,11 +21,13 @@ use super::completion::{CompletionChannel, CompletionQueueBuilder, CreateComplet
 use super::device::{DeviceInfo, TransportType};
 use super::protection_domain::ProtectionDomain;
 
+/// Error returned by [`DeviceContext::alloc_pd`] for allocating a new RDMA PD.
 #[derive(Debug, thiserror::Error)]
 #[error("failed to alloc protection domain")]
 #[non_exhaustive]
 pub struct AllocateProtectionDomainError(#[from] pub AllocateProtectionDomainErrorKind);
 
+/// The enum type for [`AllocateProtectionDomainError`].
 #[derive(Debug, thiserror::Error)]
 #[error(transparent)]
 #[non_exhaustive]
@@ -31,11 +35,13 @@ pub enum AllocateProtectionDomainErrorKind {
     Ibverbs(#[from] io::Error),
 }
 
+/// Error returned by [`DeviceContext::query_device`] for querying device context's attributes.
 #[derive(Debug, thiserror::Error)]
 #[error("failed to query device")]
 #[non_exhaustive]
 pub struct QueryDeviceError(#[from] pub QueryDeviceErrorKind);
 
+/// The enum type for [`QueryDeviceError`].
 #[derive(Debug, thiserror::Error)]
 #[error(transparent)]
 #[non_exhaustive]
@@ -43,6 +49,7 @@ pub enum QueryDeviceErrorKind {
     Ibverbs(#[from] io::Error),
 }
 
+/// Error returned by [`DeviceContext::query_port`] for querying physical port's attributes.
 #[derive(Debug, thiserror::Error)]
 #[error("failed to query port (port_num={port_num})")]
 #[non_exhaustive]
@@ -51,6 +58,7 @@ pub struct QueryPortError {
     pub source: QueryPortErrorKind,
 }
 
+/// The enum type for [`QueryPortError`].
 #[derive(Debug, thiserror::Error)]
 #[error(transparent)]
 #[non_exhaustive]
@@ -58,11 +66,14 @@ pub enum QueryPortErrorKind {
     Ibverbs(#[from] io::Error),
 }
 
+/// Error returned by [`DeviceContext::query_gid_table`] for querying RDMA device's GID table, which
+/// includes all GID entries on an RDMA device.
 #[derive(Debug, thiserror::Error)]
 #[error("failed to query GID table")]
 #[non_exhaustive]
 pub struct QueryGidTableError(#[from] pub QueryGidTableErrorKind);
 
+/// The enum type for [`QueryGidTableError`].
 #[derive(Debug, thiserror::Error)]
 #[error(transparent)]
 #[non_exhaustive]
@@ -75,6 +86,8 @@ pub enum QueryGidTableErrorKind {
     InvalidDeviceName,
 }
 
+/// Error returned by [`DeviceContext::query_gid`] and [`DeviceContext::query_gid_ex`] for querying
+/// GID / GID entry by specified GID index.
 #[derive(Debug, thiserror::Error)]
 #[error("failed to query GID (port_num={port_num}, gid_idex={gid_index})")]
 #[non_exhaustive]
@@ -84,6 +97,7 @@ pub struct QueryGidError {
     pub source: QueryGidErrorKind,
 }
 
+/// The enum type for [`QueryGidError`].
 #[derive(Debug, thiserror::Error)]
 #[error(transparent)]
 #[non_exhaustive]
@@ -91,6 +105,8 @@ pub enum QueryGidErrorKind {
     Ibverbs(#[from] io::Error),
 }
 
+/// A Global Unique Indentifier (GUID) for the RDMA device. Usually assigned to the device by its
+/// vendor during the manufacturing, may contain part of the MAC address on the ethernet device.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Guid(pub(crate) u64);
 
@@ -113,6 +129,7 @@ impl fmt::Display for Guid {
     }
 }
 
+/// A context of the RDMA device, could be used to query its resources or creating PD or CQ.
 pub struct DeviceContext {
     pub(crate) context: *mut ibv_context,
 }
@@ -120,6 +137,10 @@ pub struct DeviceContext {
 unsafe impl Send for DeviceContext {}
 unsafe impl Sync for DeviceContext {}
 
+/// RDMA Maximum Transmission Units (MTU), unlike ethernet MTU, there are only 5 allowed MTU sizes
+/// for RDMA transmission, and this only includes the RDMA payload size, which means if adding the
+/// RDMA header / UDP header / IP header into the packet, it requires you to set a bigger MTU size
+/// for the ethernet device, for example, `4200`.
 #[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum Mtu {
@@ -143,6 +164,7 @@ impl From<u32> for Mtu {
     }
 }
 
+/// The link width of a port.
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum PortWidth {
@@ -166,6 +188,7 @@ impl From<u8> for PortWidth {
     }
 }
 
+/// The link speed of a port.
 #[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum PortSpeed {
@@ -242,6 +265,7 @@ impl PortSpeed {
     }
 }
 
+/// The link layer protocol of physical port.
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum LinkLayer {
@@ -261,14 +285,30 @@ impl From<u8> for LinkLayer {
     }
 }
 
+/// The logical state of a port.
 #[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum PortState {
+    /// Reserved value, shouldn't be observed.
     Nop = ibv_port_state::IBV_PORT_NOP,
+    /// Logical link is down. The physical link of the port isn't up. In this state, the link layer
+    /// discards all packets presented to it for transmission.
     Down = ibv_port_state::IBV_PORT_DOWN,
+    /// Logical link is initializing. The physical link of the port is up, but the subnet manager
+    /// haven't yet configured the logical link. In this state, the link layer can only receive and
+    /// transmit SMPs and flow control link packets, other types of packets presented to it for
+    /// transmission are discarded.
     Initializing = ibv_port_state::IBV_PORT_INIT,
+    /// Logical link is armed. The physical link of the port is up, but the subnet manager haven't
+    /// yet fully configured the logical link. In this state, the link layer can receive and
+    /// transmit SMPs and flow control link packets, other types of packets can be received, but
+    /// discards non SMP packets for sending.
     Armed = ibv_port_state::IBV_PORT_ARMED,
+    /// Logical link is active. The link layer can transmit and receive all packet types.
     Active = ibv_port_state::IBV_PORT_ACTIVE,
+    /// Logical link is in active deferred. The logical link was active, but the physical link
+    /// suffered from a failure. If the error will be recovered within a timeout, the logical link
+    /// will return to [`PortState::Active`], otherwise it will move to [`PortState::Down`].
     ActiveDefer = ibv_port_state::IBV_PORT_ACTIVE_DEFER,
 }
 
@@ -286,16 +326,27 @@ impl From<u32> for PortState {
     }
 }
 
+/// The physical link status.
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum PhysicalState {
     NoStateChange,
+    /// The port drives its output to quiescent levels and does not respond to received data. In
+    /// this state, the link is deactivated without powering off the port.
     Sleep,
+    /// The port transmits training sequences and responds to receive training sequences.
     Polling,
+    /// The port drives its output to quiescent levels and does not respond to receive data.
     Disabled,
+    /// Both transmitter and receive active and the port is attempting to configure and transition
+    /// to the [`PhysicalState::LinkUp`] state.
     PortConfigurationTraining,
+    /// The port is available to send and receive packets.
     LinkUp,
+    /// Port attempts to re-synchronize the link and return it to normal operation.
     LinkErrorRecovery,
+    /// Port allows the transmitter and received circuitry to be tested by external test equipment
+    /// for compliance with the transmitter and receiver specifications.
     PhyTest,
 }
 
@@ -315,39 +366,48 @@ impl From<u8> for PhysicalState {
     }
 }
 
+/// The attributes of a port of an RDMA device context.
 pub struct PortAttr {
     attr: ibv_port_attr,
 }
 
 impl PortAttr {
+    /// Get the maximum MTU supported by this port.
     pub fn max_mtu(&self) -> Mtu {
         self.attr.max_mtu.into()
     }
 
+    /// Get the maximum MTU enabled on this port to transmit and receive.
     pub fn active_mtu(&self) -> Mtu {
         self.attr.active_mtu.into()
     }
 
+    /// Get the length of GID table of this port.
     pub fn gid_tbl_len(&self) -> i32 {
         self.attr.gid_tbl_len
     }
 
+    /// Get the link layer protocol used by this port.
     pub fn link_layer(&self) -> LinkLayer {
         self.attr.link_layer.into()
     }
 
+    /// Get the logical port status of this port.
     pub fn port_state(&self) -> PortState {
         self.attr.state.into()
     }
 
+    /// Get the physical link status of this port.
     pub fn phys_state(&self) -> PhysicalState {
         self.attr.phys_state.into()
     }
 
+    /// Get the active link width of this port.
     pub fn active_width(&self) -> PortWidth {
         self.attr.active_width.into()
     }
 
+    /// Get the active link speed of this port.
     pub fn active_speed(&self) -> PortSpeed {
         if self.attr.active_speed_ex != 0 {
             return self.attr.active_speed_ex.into();
@@ -356,27 +416,34 @@ impl PortAttr {
     }
 }
 
+/// The attributes of an RDMA device that is associated with a context.
 pub struct DeviceAttr {
     pub attr: ibv_device_attr_ex,
 }
 
 impl DeviceAttr {
+    /// Get the number of physical ports on this device.
     pub fn phys_port_cnt(&self) -> u8 {
         self.attr.orig_attr.phys_port_cnt
     }
 
+    /// Get the completion timestamp mask on this device, `0` for unsupported of hardware completion
+    /// timestamp.
     pub fn completion_timestamp_mask(&self) -> u64 {
         self.attr.completion_timestamp_mask
     }
 
+    /// Get the IEEE device's vendor.
     pub fn vendor_id(&self) -> u32 {
         self.attr.orig_attr.vendor_id
     }
 
+    /// Get the device's Part ID, as supplied by the vendor.
     pub fn vendor_part_id(&self) -> u32 {
         self.attr.orig_attr.vendor_part_id
     }
 
+    /// Get the firmware version of the RDMA device, it would be empty string if no version filled.
     pub fn firmware_version(&self) -> String {
         self.attr
             .orig_attr
@@ -387,10 +454,13 @@ impl DeviceAttr {
             .collect()
     }
 
+    /// Get the hardware version of the RDMA device, as supplied by the vendor.
     pub fn hardware_version(&self) -> u32 {
         self.attr.orig_attr.hw_ver
     }
 
+    /// Get the [`Guid`] associated with this RDMA device and other devices which are part of a
+    /// single system.
     pub fn sys_image_guid(&self) -> Guid {
         Guid(self.attr.orig_attr.sys_image_guid)
     }
@@ -405,6 +475,7 @@ impl Drop for DeviceContext {
 }
 
 impl DeviceContext {
+    /// Allocate a protection domain.
     pub fn alloc_pd(&self) -> Result<ProtectionDomain, AllocateProtectionDomainError> {
         let pd = unsafe { ibv_alloc_pd(self.context) };
 
@@ -417,14 +488,21 @@ impl DeviceContext {
         }))
     }
 
+    /// Create a completion event channel.
     pub fn create_comp_channel(&self) -> Result<CompletionChannel, CreateCompletionChannelError> {
         CompletionChannel::new(self)
     }
 
+    /// Create a factory for creating [`BasicCompletionQueue`] and [`ExtendedCompletionQueue`].
+    ///
+    /// [`BasicCompletionQueue`]: crate::ibverbs::completion::BasicCompletionQueue
+    /// [`ExtendedCompletionQueue`]: crate::ibverbs::completion::ExtendedCompletionQueue
+    ///
     pub fn create_cq_builder(&self) -> CompletionQueueBuilder {
         CompletionQueueBuilder::new(self)
     }
 
+    /// Query the attributes of the RDMA device.
     pub fn query_device(&self) -> Result<DeviceAttr, QueryDeviceError> {
         let mut attr = MaybeUninit::<ibv_device_attr_ex>::uninit();
         unsafe {
@@ -437,6 +515,7 @@ impl DeviceContext {
         }
     }
 
+    /// Query the attributes of a physical port.
     pub fn query_port(&self, port_num: u8) -> Result<PortAttr, QueryPortError> {
         let mut attr = MaybeUninit::<ibv_port_attr>::uninit();
         unsafe {
@@ -452,6 +531,7 @@ impl DeviceContext {
         }
     }
 
+    /// Query the [`Gid`] of the GID specified by GID index and port number.
     pub fn query_gid(&self, port_num: u8, gid_index: u32) -> Result<Gid, QueryGidError> {
         let mut gid = Gid::default();
         unsafe {
@@ -466,6 +546,7 @@ impl DeviceContext {
         }
     }
 
+    /// Query the [`GidEntry`] of the GID specified by GID index and port number.
     pub fn query_gid_ex(&self, port_num: u8, gid_index: u32) -> Result<GidEntry, QueryGidError> {
         let mut entry = GidEntry::default();
         unsafe {
@@ -480,6 +561,10 @@ impl DeviceContext {
         }
     }
 
+    /// Query the [`GidType`] of the GID specified by GID index and port number.
+    ///
+    /// [`GidType`]: crate::ibverbs::address::GidType
+    ///
     pub fn query_gid_type(&self, port_num: u8, gid_index: u32) -> Result<u32, QueryGidError> {
         let mut gid_type = u32::default();
         unsafe {
@@ -558,6 +643,7 @@ impl DeviceContext {
         Ok(res)
     }
 
+    /// Query all [`GidEntry`]s on a RDMA device.
     #[inline]
     pub fn query_gid_table(&self) -> Result<Vec<GidEntry>, QueryGidTableError> {
         let dev_attr = self.query_device().map_err(QueryGidTableErrorKind::QueryDevice)?;

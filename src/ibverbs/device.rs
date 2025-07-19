@@ -207,13 +207,13 @@ impl Device<'_> {
 
 /// Trait for common device information access
 pub trait DeviceInfo {
-    /// Returns the name of the device, for example, `mlx5_0`
+    /// Get the name of the device, for example, `mlx5_0`.
     fn name(&self) -> String;
 
-    /// Returns the GUID of the device
+    /// Get the GUID of the device.
     fn guid(&self) -> Guid;
 
-    /// Returns the transport type of the device
+    /// Get the transport type of the device.
     fn transport_type(&self) -> TransportType;
 }
 
