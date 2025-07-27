@@ -4,7 +4,7 @@ use core::time;
 use std::{io::IoSlice, thread};
 
 use sideway::ibverbs::completion::GenericCompletionQueue;
-use sideway::ibverbs::queue_pair::GenericQueuePair;
+use sideway::ibverbs::queue_pair::{GenericQueuePair, SendOperationFlags};
 use sideway::ibverbs::{
     address::{AddressHandleAttribute, GidType},
     device,
@@ -63,7 +63,16 @@ fn main(#[case] use_qp_ex: bool, #[case] use_cq_ex: bool) -> Result<(), Box<dyn 
         };
 
         let mut builder = pd.create_qp_builder();
-        builder.setup_max_inline_data(128).setup_send_cq(&sq).setup_recv_cq(&rq);
+        builder
+            .setup_max_inline_data(128)
+            .setup_send_cq(&sq)
+            .setup_recv_cq(&rq)
+            .setup_send_ops_flags(
+                SendOperationFlags::Send
+                    | SendOperationFlags::SendWithImmediate
+                    | SendOperationFlags::Write
+                    | SendOperationFlags::WriteWithImmediate,
+            );
 
         let mut qp: GenericQueuePair = if use_qp_ex {
             builder.build_ex().unwrap().into()
@@ -127,13 +136,21 @@ fn main(#[case] use_qp_ex: bool, #[case] use_cq_ex: bool) -> Result<(), Box<dyn 
         let mut guard = qp.start_post_recv();
         let recv_handle = guard.construct_wr(114514);
         unsafe { recv_handle.setup_sge(recv_mr.lkey(), recv_data.as_mut_ptr() as _, recv_data.len() as _) };
+
+        // another recv wqe for send with imm
+        let recv_handle = guard.construct_wr(1919);
+        unsafe { recv_handle.setup_sge(recv_mr.lkey(), recv_data.as_mut_ptr() as _, recv_data.len() as _) };
+
+        // // another recv wqe for write with imm
+        let recv_handle = guard.construct_wr(810);
+        unsafe { recv_handle.setup_sge(recv_mr.lkey(), recv_data.as_mut_ptr() as _, recv_data.len() as _) };
         guard.post().unwrap();
 
         let mut guard = qp.start_post_send();
         let buf = vec![0, 1, 2, 3];
 
         let write_handle = guard
-            .construct_wr(233, WorkRequestFlags::Signaled)
+            .construct_wr(233, WorkRequestFlags::Signaled | WorkRequestFlags::Inline)
             .setup_write(mr.rkey(), send_data.as_ptr() as _);
 
         write_handle.setup_inline_data(&buf);
@@ -145,15 +162,81 @@ fn main(#[case] use_qp_ex: bool, #[case] use_cq_ex: bool) -> Result<(), Box<dyn 
 
         let write_handle = unsafe {
             guard
-                .construct_wr(234, WorkRequestFlags::Signaled)
+                .construct_wr(234, WorkRequestFlags::Signaled | WorkRequestFlags::Inline)
                 .setup_write(mr.rkey(), send_data.as_ptr().byte_add(4) as _)
         };
 
         write_handle.setup_inline_data_list(&[IoSlice::new(buf[0].as_ref()), IoSlice::new(buf[1].as_ref())]);
 
         // use SEND to transmit the same data
-        let send_handle = guard.construct_wr(567, WorkRequestFlags::Signaled).setup_send();
+        let send_handle = guard
+            .construct_wr(567, WorkRequestFlags::Signaled | WorkRequestFlags::Inline)
+            .setup_send();
         send_handle.setup_inline_data_list(&[IoSlice::new(buf[0].as_ref()), IoSlice::new(buf[1].as_ref())]);
+
+        // it's safe for users to drop the inline buffer after they calling setup inline data
+        drop(buf);
+
+        guard.post().unwrap();
+
+        thread::sleep(time::Duration::from_millis(10));
+
+        // poll send CQ for the completion
+        {
+            let mut poller = sq.start_poll().unwrap();
+            while let Some(wc) = poller.next() {
+                println!("wr_id {}, status: {}, opcode: {}", wc.wr_id(), wc.status(), wc.opcode());
+            }
+        }
+
+        unsafe {
+            let slice = std::slice::from_raw_parts(mr.get_ptr() as *const u8, mr.region_len());
+            println!("Buffer contents: {slice:?}");
+        }
+
+        // poll recv CQ for the completion
+        {
+            let mut poller = rq.start_poll().unwrap();
+            while let Some(wc) = poller.next() {
+                println!("wr_id {}, status: {}, opcode: {}", wc.wr_id(), wc.status(), wc.opcode())
+            }
+        }
+
+        unsafe {
+            let slice = std::slice::from_raw_parts(recv_mr.get_ptr() as *const u8, recv_mr.region_len());
+            println!("Recv Buffer contents: {slice:?}");
+        }
+
+        // Test send with imm and write with imm
+        let buf = vec![
+            vec![b'R', b'e', b'w', b'r', b'i', b't', b'e'],
+            vec![b'i', b'n'],
+            vec![b'R', b'u', b's', b't'],
+        ];
+
+        let mut guard = qp.start_post_send();
+
+        // use SEND to transmit the same data
+        let send_handle = guard
+            .construct_wr(567, WorkRequestFlags::Signaled | WorkRequestFlags::Inline)
+            .setup_send_imm(12580);
+        send_handle.setup_inline_data_list(&[
+            IoSlice::new(buf[0].as_ref()),
+            IoSlice::new(buf[1].as_ref()),
+            IoSlice::new(buf[2].as_ref()),
+        ]);
+
+        let write_handle = unsafe {
+            guard
+                .construct_wr(234, WorkRequestFlags::Signaled | WorkRequestFlags::Inline)
+                .setup_write_imm(mr.rkey(), send_data.as_ptr().byte_add(4) as _, 18515)
+        };
+
+        write_handle.setup_inline_data_list(&[
+            IoSlice::new(buf[0].as_ref()),
+            IoSlice::new(buf[1].as_ref()),
+            IoSlice::new(buf[2].as_ref()),
+        ]);
 
         // it's safe for users to drop the inline buffer after they calling setup inline data
         drop(buf);
@@ -179,7 +262,13 @@ fn main(#[case] use_qp_ex: bool, #[case] use_cq_ex: bool) -> Result<(), Box<dyn 
         {
             let mut poller = rq.start_poll().unwrap();
             while let Some(wc) = poller.next() {
-                println!("wr_id {}, status: {}, opcode: {}", wc.wr_id(), wc.status(), wc.opcode())
+                println!(
+                    "wr_id {}, status: {}, opcode: {}, imm_data: {}",
+                    wc.wr_id(),
+                    wc.status(),
+                    wc.opcode(),
+                    wc.imm_data()
+                )
             }
         }
 

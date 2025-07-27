@@ -6,8 +6,8 @@ use rdma_mummy_sys::{
     ibv_qp_attr, ibv_qp_attr_mask, ibv_qp_cap, ibv_qp_create_send_ops_flags, ibv_qp_ex, ibv_qp_init_attr,
     ibv_qp_init_attr_ex, ibv_qp_init_attr_mask, ibv_qp_state, ibv_qp_to_qp_ex, ibv_qp_type, ibv_recv_wr,
     ibv_rx_hash_conf, ibv_send_flags, ibv_send_wr, ibv_sge, ibv_wr_abort, ibv_wr_complete, ibv_wr_opcode,
-    ibv_wr_rdma_write, ibv_wr_send, ibv_wr_set_inline_data, ibv_wr_set_inline_data_list, ibv_wr_set_sge,
-    ibv_wr_set_sge_list, ibv_wr_start,
+    ibv_wr_rdma_read, ibv_wr_rdma_write, ibv_wr_rdma_write_imm, ibv_wr_send, ibv_wr_send_imm, ibv_wr_set_inline_data,
+    ibv_wr_set_inline_data_list, ibv_wr_set_sge, ibv_wr_set_sge_list, ibv_wr_start,
 };
 use std::sync::LazyLock;
 use std::{
@@ -377,7 +377,13 @@ mod private_traits {
     pub trait PostSendGuard {
         fn setup_send(&mut self);
 
+        fn setup_send_imm(&mut self, imm_data: u32);
+
         fn setup_write(&mut self, rkey: u32, remote_addr: u64);
+
+        fn setup_write_imm(&mut self, rkey: u32, remote_addr: u64, imm_data: u32);
+
+        fn setup_read(&mut self, rkey: u32, remote_addr: u64);
 
         fn setup_inline_data(&mut self, buf: &[u8]);
 
@@ -756,6 +762,9 @@ impl<'res> QueuePairBuilder<'res> {
 
     /// Setup the [`CompletionQueue`] to be associated with the QP's send queue, could be the same
     /// one for [`setup_recv_cq`].
+    ///
+    /// [`setup_recv_cq`]: QueuePairBuilder::setup_recv_cq
+    ///
     pub fn setup_send_cq<'sq>(&mut self, send_cq: &'sq impl CompletionQueue) -> &mut Self
     where
         'sq: 'res,
@@ -766,6 +775,9 @@ impl<'res> QueuePairBuilder<'res> {
 
     /// Setup the [`CompletionQueue`] to be associated with the QP's recv queue, could be the same
     /// one for [`setup_send_cq`].
+    ///
+    /// [`setup_send_cq`]: QueuePairBuilder::setup_send_cq
+    ///
     pub fn setup_recv_cq<'rq>(&mut self, recv_cq: &'rq impl CompletionQueue) -> &mut Self
     where
         'rq: 'res,
@@ -1155,8 +1167,23 @@ impl<'g, G: PostSendGuard> WorkRequestHandle<'g, G> {
         LocalBufferHandle { guard: self.guard }
     }
 
+    pub fn setup_send_imm(self, imm_data: u32) -> LocalBufferHandle<'g, G> {
+        self.guard.setup_send_imm(imm_data);
+        LocalBufferHandle { guard: self.guard }
+    }
+
     pub fn setup_write(self, rkey: u32, remote_addr: u64) -> LocalBufferHandle<'g, G> {
         self.guard.setup_write(rkey, remote_addr);
+        LocalBufferHandle { guard: self.guard }
+    }
+
+    pub fn setup_write_imm(self, rkey: u32, remote_addr: u64, imm_data: u32) -> LocalBufferHandle<'g, G> {
+        self.guard.setup_write_imm(rkey, remote_addr, imm_data);
+        LocalBufferHandle { guard: self.guard }
+    }
+
+    pub fn setup_read(self, rkey: u32, remote_addr: u64) -> LocalBufferHandle<'g, G> {
+        self.guard.setup_read(rkey, remote_addr);
         LocalBufferHandle { guard: self.guard }
     }
 }
@@ -1235,8 +1262,26 @@ impl private_traits::PostSendGuard for BasicPostSendGuard<'_> {
         self.wrs.last_mut().unwrap().opcode = WorkRequestOperationType::Send as _;
     }
 
+    fn setup_send_imm(&mut self, imm_data: u32) {
+        self.wrs.last_mut().unwrap().opcode = WorkRequestOperationType::SendWithImmediate as _;
+        self.wrs.last_mut().unwrap().imm_data_invalidated_rkey_union.imm_data = imm_data;
+    }
+
     fn setup_write(&mut self, rkey: u32, remote_addr: u64) {
         self.wrs.last_mut().unwrap().opcode = WorkRequestOperationType::Write as _;
+        self.wrs.last_mut().unwrap().wr.rdma.remote_addr = remote_addr;
+        self.wrs.last_mut().unwrap().wr.rdma.rkey = rkey;
+    }
+
+    fn setup_write_imm(&mut self, rkey: u32, remote_addr: u64, imm_data: u32) {
+        self.wrs.last_mut().unwrap().opcode = WorkRequestOperationType::WriteWithImmediate as _;
+        self.wrs.last_mut().unwrap().wr.rdma.remote_addr = remote_addr;
+        self.wrs.last_mut().unwrap().wr.rdma.rkey = rkey;
+        self.wrs.last_mut().unwrap().imm_data_invalidated_rkey_union.imm_data = imm_data;
+    }
+
+    fn setup_read(&mut self, rkey: u32, remote_addr: u64) {
+        self.wrs.last_mut().unwrap().opcode = WorkRequestOperationType::Read as _;
         self.wrs.last_mut().unwrap().wr.rdma.remote_addr = remote_addr;
         self.wrs.last_mut().unwrap().wr.rdma.rkey = rkey;
     }
@@ -1346,8 +1391,20 @@ impl private_traits::PostSendGuard for ExtendedPostSendGuard<'_> {
         unsafe { ibv_wr_send(self.qp_ex.as_ptr()) };
     }
 
+    fn setup_send_imm(&mut self, imm_data: u32) {
+        unsafe { ibv_wr_send_imm(self.qp_ex.as_ptr(), imm_data) };
+    }
+
     fn setup_write(&mut self, rkey: u32, remote_addr: u64) {
         unsafe { ibv_wr_rdma_write(self.qp_ex.as_ptr(), rkey, remote_addr) };
+    }
+
+    fn setup_write_imm(&mut self, rkey: u32, remote_addr: u64, imm_data: u32) {
+        unsafe { ibv_wr_rdma_write_imm(self.qp_ex.as_ptr(), rkey, remote_addr, imm_data) };
+    }
+
+    fn setup_read(&mut self, rkey: u32, remote_addr: u64) {
+        unsafe { ibv_wr_rdma_read(self.qp_ex.as_ptr(), rkey, remote_addr) };
     }
 
     fn setup_inline_data(&mut self, buf: &[u8]) {
@@ -1546,10 +1603,31 @@ impl private_traits::PostSendGuard for GenericPostSendGuard<'_> {
         }
     }
 
+    fn setup_send_imm(&mut self, imm_data: u32) {
+        match self {
+            GenericPostSendGuard::Basic(guard) => guard.setup_send_imm(imm_data),
+            GenericPostSendGuard::Extended(guard) => guard.setup_send_imm(imm_data),
+        }
+    }
+
     fn setup_write(&mut self, rkey: u32, remote_addr: u64) {
         match self {
             GenericPostSendGuard::Basic(guard) => guard.setup_write(rkey, remote_addr),
             GenericPostSendGuard::Extended(guard) => guard.setup_write(rkey, remote_addr),
+        }
+    }
+
+    fn setup_write_imm(&mut self, rkey: u32, remote_addr: u64, imm_data: u32) {
+        match self {
+            GenericPostSendGuard::Basic(guard) => guard.setup_write_imm(rkey, remote_addr, imm_data),
+            GenericPostSendGuard::Extended(guard) => guard.setup_write_imm(rkey, remote_addr, imm_data),
+        }
+    }
+
+    fn setup_read(&mut self, rkey: u32, remote_addr: u64) {
+        match self {
+            GenericPostSendGuard::Basic(guard) => guard.setup_read(rkey, remote_addr),
+            GenericPostSendGuard::Extended(guard) => guard.setup_read(rkey, remote_addr),
         }
     }
 

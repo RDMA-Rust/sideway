@@ -11,7 +11,7 @@ use rdma_mummy_sys::{
     ibv_comp_channel, ibv_cq, ibv_cq_ex, ibv_cq_init_attr_ex, ibv_create_comp_channel, ibv_create_cq, ibv_create_cq_ex,
     ibv_create_cq_wc_flags, ibv_destroy_comp_channel, ibv_destroy_cq, ibv_end_poll, ibv_next_poll, ibv_pd, ibv_poll_cq,
     ibv_poll_cq_attr, ibv_start_poll, ibv_wc, ibv_wc_opcode, ibv_wc_read_byte_len, ibv_wc_read_completion_ts,
-    ibv_wc_read_opcode, ibv_wc_read_vendor_err, ibv_wc_status,
+    ibv_wc_read_imm_data, ibv_wc_read_opcode, ibv_wc_read_vendor_err, ibv_wc_status,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -450,12 +450,22 @@ impl BasicWorkCompletion<'_> {
         self.wc.opcode
     }
 
+    /// Get the vendor specific error which provides more information if the completion ended with
+    /// error.
     pub fn vendor_err(&self) -> u32 {
         self.wc.vendor_err
     }
 
+    /// Get the number of bytes transferred, relevant if the receive queue for incoming Send or RDMA
+    /// Write with immediate operations. This value doesn't include the length of the immediate
+    /// data.
     pub fn byte_len(&self) -> u32 {
         self.wc.byte_len
+    }
+
+    /// Get the immediate data associated with the corresponding Work Request.
+    pub fn imm_data(&self) -> u32 {
+        unsafe { self.wc.imm_data_invalidated_rkey_union.imm_data }
     }
 }
 
@@ -487,6 +497,11 @@ impl ExtendedWorkCompletion<'_> {
 
     pub fn completion_timestamp(&self) -> u64 {
         unsafe { ibv_wc_read_completion_ts(self.cq.as_ptr()) }
+    }
+
+    /// Get the immediate data associated with the corresponding Work Request.
+    pub fn imm_data(&self) -> u32 {
+        unsafe { ibv_wc_read_imm_data(self.cq.as_ptr()) }
     }
 }
 
@@ -682,6 +697,8 @@ impl GenericWorkCompletion<'_> {
         }
     }
 
+    /// Get the vendor specific error which provides more information if the completion ended with
+    /// error.
     pub fn vendor_err(&self) -> u32 {
         match self {
             GenericWorkCompletion::Basic(wc) => wc.vendor_err(),
@@ -689,10 +706,21 @@ impl GenericWorkCompletion<'_> {
         }
     }
 
+    /// Get the number of bytes transferred, relevant if the receive queue for incoming Send or RDMA
+    /// Write with immediate operations. This value doesn't include the length of the immediate
+    /// data.
     pub fn byte_len(&self) -> u32 {
         match self {
             GenericWorkCompletion::Basic(wc) => wc.byte_len(),
             GenericWorkCompletion::Extended(wc) => wc.byte_len(),
+        }
+    }
+
+    /// Get the immediate data associated with the corresponding Work Request.
+    pub fn imm_data(&self) -> u32 {
+        match self {
+            GenericWorkCompletion::Basic(wc) => wc.imm_data(),
+            GenericWorkCompletion::Extended(wc) => wc.imm_data(),
         }
     }
 }
