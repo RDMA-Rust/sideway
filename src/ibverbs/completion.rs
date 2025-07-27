@@ -1,3 +1,4 @@
+//! Contains all you need for handling Work Completions.
 use std::num::NonZeroU32;
 use std::os::raw::c_void;
 use std::ptr::NonNull;
@@ -14,11 +15,13 @@ use rdma_mummy_sys::{
     ibv_wc_read_imm_data, ibv_wc_read_opcode, ibv_wc_read_vendor_err, ibv_wc_status,
 };
 
+/// Error returned by [`DeviceContext::create_comp_channel`] for creating a new completion channel.
 #[derive(Debug, thiserror::Error)]
 #[error("failed to create completion channel")]
 #[non_exhaustive]
 pub struct CreateCompletionChannelError(#[from] pub CreateCompletionChannelErrorKind);
 
+/// The enum type for [`CreateCompletionChannelError`].
 #[derive(Debug, thiserror::Error)]
 #[error(transparent)]
 #[non_exhaustive]
@@ -26,11 +29,14 @@ pub enum CreateCompletionChannelErrorKind {
     Ibverbs(#[from] io::Error),
 }
 
+/// Error returned by [`CompletionQueueBuilder::build`] and [`CompletionQueueBuilder::build_ex`] for
+/// creating a new RDMA CQ.
 #[derive(Debug, thiserror::Error)]
 #[error("failed to create completion queue")]
 #[non_exhaustive]
 pub struct CreateCompletionQueueError(#[from] pub CreateCompletionQueueErrorKind);
 
+/// The enum type for [`CreateCompletionQueueError`].
 #[derive(Debug, thiserror::Error)]
 #[error(transparent)]
 #[non_exhaustive]
@@ -38,6 +44,8 @@ pub enum CreateCompletionQueueErrorKind {
     Ibverbs(#[from] io::Error),
 }
 
+/// Error returned by [`BasicCompletionQueue::start_poll`] and
+/// [`ExtendedCompletionQueue::start_poll`] for polling Work Completions from RDMA CQ.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum PollCompletionQueueError {
@@ -47,6 +55,7 @@ pub enum PollCompletionQueueError {
     CompletionQueueEmpty,
 }
 
+/// Possible statuses of a Work Completion's corresponding operation.
 #[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WorkCompletionStatus {
@@ -108,6 +117,7 @@ impl From<u32> for WorkCompletionStatus {
     }
 }
 
+/// Operation that a Work Completion's corresponding Work Request performed.
 #[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WorkCompletionOperationType {
@@ -161,6 +171,9 @@ impl From<u32> for WorkCompletionOperationType {
     }
 }
 
+/// Controls fields to be filled for Work Completions of a [`ExtendedCompletionQueue`]. It's either
+/// 0 or the bitwise `OR` of one or more of the following flags. Used in
+/// [`CompletionQueueBuilder::setup_wc_flags`].
 #[bitmask(u64)]
 #[bitmask_config(vec_debug)]
 pub enum CreateCompletionQueueWorkCompletionFlags {
@@ -186,6 +199,10 @@ pub enum CreateCompletionQueueWorkCompletionFlags {
         | CreateCompletionQueueWorkCompletionFlags::DestinationLocalIdentifierPathBits.bits,
 }
 
+/// A completion channel is a file descriptor that is used to deliver Work Completion notifications
+/// to userspace process. When a Work Completion event is generated for a [`CompletionQueue`], the
+/// event is delivered via the completion channel attached to that CQ. This could be used for event
+/// notification based poll instead of busy polling (of course, the latency would be higher).
 #[derive(Debug)]
 pub struct CompletionChannel<'res> {
     pub(crate) channel: NonNull<ibv_comp_channel>,
@@ -217,15 +234,23 @@ impl<'res> CompletionChannel<'res> {
     }
 }
 
+/// Unified interface for operations over RDMA CQs.
 pub trait CompletionQueue {
     /// # Safety
     ///
-    /// return the basic handle of CQ;
-    /// we mark this method unsafe because the lifetime of ibv_cq is not
+    /// Return the basic handle of CQ.
+    /// We mark this method unsafe because the lifetime of `ibv_cq` is not
     /// associated with the return value.
     unsafe fn cq(&self) -> NonNull<ibv_cq>;
 }
 
+/// The legacy [`CompletionQueue`] created with [`CompletionQueueBuilder::build`]
+/// ([`ibv_create_cq`]), which doesn't support some advanced features (including
+/// [`ibv_start_poll`] APIs and hardware timestamp).
+///
+/// [`ibv_create_cq`]: https://man7.org/linux/man-pages/man3/ibv_create_cq.3.html
+/// [`ibv_start_poll`]: https://man7.org/linux/man-pages/man3/ibv_create_cq_ex.3.html
+///
 #[derive(Debug)]
 pub struct BasicCompletionQueue<'res> {
     pub(crate) cq: NonNull<ibv_cq>,
@@ -251,6 +276,17 @@ impl CompletionQueue for BasicCompletionQueue<'_> {
 }
 
 impl BasicCompletionQueue<'_> {
+    /// Starts to poll Work Completions over this CQ, every [`BasicCompletionQueue`] should hold only
+    /// one [`BasicPoller`] at the same time.
+    ///
+    /// Note that this would call [`ibv_poll_cq`] for underlying polling, which requires users pass
+    /// in a Work Completion array for filling informations. In C, users would create the array
+    /// themselves, but for here, we would create it for you. To specify the array size
+    /// (how many Work Completions you want to poll at a time), you should call
+    /// [`BasicCompletionQueue::setup_poll_batch`].
+    ///
+    /// [`ibv_poll_cq`]: https://www.rdmamojo.com/2013/02/15/ibv_poll_cq/
+    ///
     pub fn start_poll(&self) -> Result<BasicPoller<'_>, PollCompletionQueueError> {
         let mut cqes = Vec::<ibv_wc>::with_capacity(self.poll_batch.get() as _);
 
@@ -284,11 +320,20 @@ impl BasicCompletionQueue<'_> {
         }
     }
 
+    /// Change the polling batch size, note that this won't take effect until your next call to
+    /// [`BasicCompletionQueue::start_poll`].
     pub fn setup_poll_batch(&mut self, size: NonZeroU32) {
         self.poll_batch = size;
     }
 }
 
+/// The extended [`CompletionQueue`] created with [`CompletionQueueBuilder::build_ex`]
+/// ([`ibv_create_cq_ex`]), which support some advanced features (including [`ibv_start_poll`] APIs
+/// and hardware timestamp), should provide better performance compared to [`BasicCompletionQueue`].
+///
+/// [`ibv_create_cq_ex`]: https://man7.org/linux/man-pages/man3/ibv_create_cq_ex.3.html
+/// [`ibv_start_poll`]: https://man7.org/linux/man-pages/man3/ibv_create_cq_ex.3.html
+///
 #[derive(Debug)]
 pub struct ExtendedCompletionQueue<'res> {
     pub(crate) cq_ex: NonNull<ibv_cq_ex>,
@@ -315,6 +360,8 @@ impl CompletionQueue for ExtendedCompletionQueue<'_> {
 }
 
 impl ExtendedCompletionQueue<'_> {
+    /// Starts to poll Work Completions over this CQ, every [`ExtendedCompletionQueue`] should hold
+    /// only one [`ExtendedPoller`] at the same time.
     pub fn start_poll(&self) -> Result<ExtendedPoller<'_>, PollCompletionQueueError> {
         let ret = unsafe {
             ibv_start_poll(
@@ -335,7 +382,8 @@ impl ExtendedCompletionQueue<'_> {
     }
 }
 
-// generic builder for both cq and cq_ex
+/// A factory for creating [`BasicCompletionQueue`] and [`ExtendedCompletionQueue`] with specified
+/// parameters.
 pub struct CompletionQueueBuilder<'res> {
     dev_ctx: &'res DeviceContext,
     init_attr: ibv_cq_init_attr_ex,
@@ -362,16 +410,21 @@ impl<'res> CompletionQueueBuilder<'res> {
         }
     }
 
+    /// Setup the [`CompletionQueue`] depth, which controls how many Work Completions could be
+    /// stored in this RDMA CQ. If it's too small, CQ may overrun.
     pub fn setup_cqe(&mut self, cqe: u32) -> &mut Self {
         self.init_attr.cqe = cqe;
         self
     }
 
+    /// Setup a opaque context for the CQ, so user could use it later.
     pub fn setup_cq_context(&mut self, cq_context: *mut c_void) -> &mut Self {
         self.init_attr.cq_context = cq_context;
         self
     }
 
+    /// Setup the completion channel to be associated with the CQ, such that when there is new
+    /// Work Completions come in, the completion channel would notify user.
     pub fn setup_comp_channel<'channel>(&mut self, channel: &'channel CompletionChannel, comp_vector: u32) -> &mut Self
     where
         'channel: 'res,
@@ -381,14 +434,18 @@ impl<'res> CompletionQueueBuilder<'res> {
         self
     }
 
+    /// Setup what fields should be filled in for Work Completions in this CQ. Only valid for
+    /// [`CompletionQueueBuilder::build_ex`].
     pub fn setup_wc_flags(&mut self, wc_flags: CreateCompletionQueueWorkCompletionFlags) -> &mut Self {
         self.init_attr.wc_flags = wc_flags.bits();
         self
     }
 
     // TODO(fuji): set various attributes
-
-    // build extended cq
+    /// Create a [`ExtendedCompletionQueue`] with [`ibv_create_cq_ex`].
+    ///
+    /// [`ibv_create_cq_ex`]: https://man7.org/linux/man-pages/man3/ibv_create_cq_ex.3.html
+    ///
     pub fn build_ex(&self) -> Result<ExtendedCompletionQueue<'res>, CreateCompletionQueueError> {
         // create a copy of init_attr since ibv_create_cq_ex requires a mutable pointer to it
         let mut init_attr = self.init_attr;
@@ -405,7 +462,10 @@ impl<'res> CompletionQueueBuilder<'res> {
         }
     }
 
-    // build basic cq
+    /// Create a [`BasicCompletionQueue`] with [`ibv_create_cq`].
+    ///
+    /// [`ibv_create_cq`]: https://man7.org/linux/man-pages/man3/ibv_create_cq.3.html
+    ///
     pub fn build(&self) -> Result<BasicCompletionQueue<'res>, CreateCompletionQueueError> {
         let cq = unsafe {
             ibv_create_cq(
@@ -431,21 +491,25 @@ impl<'res> CompletionQueueBuilder<'res> {
 }
 
 // TODO trait for both cq and cq_ex?
-
+/// The basic Work Completion indicates some Work Requests have completed.
 pub struct BasicWorkCompletion<'iter> {
     wc: ibv_wc,
     _phantom: PhantomData<&'iter ()>,
 }
 
 impl BasicWorkCompletion<'_> {
+    /// Get the 64 bits value that was associated with the corresponding Work Request.
     pub fn wr_id(&self) -> u64 {
         self.wc.wr_id
     }
 
+    /// Get the status of the operation, could be cast into [`WorkCompletionStatus`].
     pub fn status(&self) -> u32 {
         self.wc.status
     }
 
+    /// Get the operation that the corresponding Work Request performed, could be cast into
+    /// [`WorkCompletionOperationType`].
     pub fn opcode(&self) -> u32 {
         self.wc.opcode
     }
@@ -469,32 +533,44 @@ impl BasicWorkCompletion<'_> {
     }
 }
 
+/// The extended Work Completion indicates some Work Requests have completed, with support for more
+/// fields filled in, including hardware timestamp.
 pub struct ExtendedWorkCompletion<'iter> {
     cq: NonNull<ibv_cq_ex>,
     _phantom: PhantomData<&'iter ()>,
 }
 
 impl ExtendedWorkCompletion<'_> {
+    /// Get the 64 bits value that was associated with the corresponding Work Request.
     pub fn wr_id(&self) -> u64 {
         unsafe { self.cq.as_ref().wr_id }
     }
 
+    /// Get the status of the operation, could be cast into [`WorkCompletionStatus`].
     pub fn status(&self) -> u32 {
         unsafe { self.cq.as_ref().status }
     }
 
+    /// Get the operation that the corresponding Work Request performed, could be cast into
+    /// [`WorkCompletionOperationType`].
     pub fn opcode(&self) -> u32 {
         unsafe { ibv_wc_read_opcode(self.cq.as_ptr()) }
     }
 
+    /// Get the vendor specific error which provides more information if the completion ended with
+    /// error.
     pub fn vendor_err(&self) -> u32 {
         unsafe { ibv_wc_read_vendor_err(self.cq.as_ptr()) }
     }
 
+    /// Get the number of bytes transferred, relevant if the receive queue for incoming Send or RDMA
+    /// Write with immediate operations. This value doesn't include the length of the immediate
+    /// data.
     pub fn byte_len(&self) -> u32 {
         unsafe { ibv_wc_read_byte_len(self.cq.as_ptr()) }
     }
 
+    /// Get the completion timestamp in HCA clock units.
     pub fn completion_timestamp(&self) -> u64 {
         unsafe { ibv_wc_read_completion_ts(self.cq.as_ptr()) }
     }
@@ -520,6 +596,9 @@ enum BasicCompletionQueueState {
     Empty,
 }
 
+// TODO: provide a trait for poller?
+/// The basic `Poller` that works for [`BasicCompletionQueue`] for getting Work Completions in an
+/// iterator style.
 pub struct BasicPoller<'cq> {
     cq: NonNull<ibv_cq>,
     wcs: Vec<ibv_wc>,
@@ -528,6 +607,7 @@ pub struct BasicPoller<'cq> {
     _phantom: PhantomData<&'cq ()>,
 }
 
+// TODO: implement BasicPoller with lending iterator for better performance.
 impl<'cq> Iterator for BasicPoller<'cq> {
     type Item = BasicWorkCompletion<'cq>;
 
@@ -591,6 +671,8 @@ impl<'cq> Iterator for BasicPoller<'cq> {
     }
 }
 
+/// The extended `Poller` that works for [`ExtendedCompletionQueue`] for getting Work Completions in
+/// an iterator style.
 pub struct ExtendedPoller<'cq> {
     cq: NonNull<ibv_cq_ex>,
     is_first: bool,
@@ -628,6 +710,8 @@ impl<'cq> Iterator for ExtendedPoller<'cq> {
     }
 }
 
+/// A unified interface for [`BasicCompletionQueue`] and [`ExtendedCompletionQueue`], implemented
+/// with enum dispatching.
 #[derive(Debug)]
 pub enum GenericCompletionQueue<'cq> {
     /// Variant for a Basic CQ
@@ -645,6 +729,8 @@ impl CompletionQueue for GenericCompletionQueue<'_> {
     }
 }
 
+/// A unified interface for [`BasicPoller`] and [`ExtendedPoller`], implemented with enum
+/// dispatching.
 pub enum GenericPoller<'cq> {
     Basic(BasicPoller<'cq>),
     Extended(ExtendedPoller<'cq>),
@@ -670,12 +756,15 @@ impl<'cq> Iterator for GenericPoller<'cq> {
     }
 }
 
+/// A unified interface for [`BasicWorkCompletion`] and [`ExtendedWorkCompletion`], implemented with
+/// enum dispatching.
 pub enum GenericWorkCompletion<'iter> {
     Basic(BasicWorkCompletion<'iter>),
     Extended(ExtendedWorkCompletion<'iter>),
 }
 
 impl GenericWorkCompletion<'_> {
+    /// Get the 64 bits value that was associated with the corresponding Work Request.
     pub fn wr_id(&self) -> u64 {
         match self {
             GenericWorkCompletion::Basic(wc) => wc.wr_id(),
@@ -683,6 +772,7 @@ impl GenericWorkCompletion<'_> {
         }
     }
 
+    /// Get the status of the operation, could be cast into [`WorkCompletionStatus`].
     pub fn status(&self) -> u32 {
         match self {
             GenericWorkCompletion::Basic(wc) => wc.status(),
@@ -690,6 +780,8 @@ impl GenericWorkCompletion<'_> {
         }
     }
 
+    /// Get the operation that the corresponding Work Request performed, could be cast into
+    /// [`WorkCompletionOperationType`].
     pub fn opcode(&self) -> u32 {
         match self {
             GenericWorkCompletion::Basic(wc) => wc.opcode(),
