@@ -561,9 +561,15 @@ impl DeviceContext {
         }
     }
 
-    /// Query the [`GidType`] of the GID specified by GID index and port number.
+    /// Query the type of the GID specified by GID index and port number.
+    /// Note that this gid type is represented by [`u32`]:
     ///
-    /// [`GidType`]: crate::ibverbs::address::GidType
+    /// - If return value is 0, the type is either [`GidType::InfiniBand`] or [`GidType::RoceV1`].
+    /// - If return value is 1, the type is [`GidType::RoceV2`].
+    ///
+    /// [`GidType::InfiniBand`]: crate::ibverbs::address::GidType::InfiniBand
+    /// [`GidType::RoceV1`]: crate::ibverbs::address::GidType::RoceV1
+    /// [`GidType::RoceV2`]: crate::ibverbs::address::GidType::RoceV2
     ///
     pub fn query_gid_type(&self, port_num: u8, gid_index: u32) -> Result<u32, QueryGidError> {
         let mut gid_type = u32::default();
