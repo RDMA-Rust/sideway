@@ -1,3 +1,4 @@
+//! The device is used for creating a device context, everything about RDMA starts here.
 use std::ops::Index;
 use std::{ffi::CStr, io, marker::PhantomData};
 
@@ -9,11 +10,13 @@ use rdma_mummy_sys::{
 use super::device_context::DeviceContext;
 use super::device_context::Guid;
 
+/// Error returned by [`DeviceList::new`] for getting a new [`DeviceList`].
 #[derive(Debug, thiserror::Error)]
 #[error("failed to get device list")]
 #[non_exhaustive]
 pub struct GetDeviceListError(#[from] pub GetDeviceListErrorKind);
 
+/// The enum type for [`GetDeviceListError`].
 #[derive(Debug, thiserror::Error)]
 #[error(transparent)]
 #[non_exhaustive]
@@ -21,11 +24,13 @@ pub enum GetDeviceListErrorKind {
     Ibverbs(#[from] io::Error),
 }
 
+/// Error returned by [`Device::open`] for open the device to create a [`DeviceContext`].
 #[derive(Debug, thiserror::Error)]
 #[error("failed to open device")]
 #[non_exhaustive]
 pub struct OpenDeviceError(#[from] pub OpenDeviceErrorKind);
 
+/// The enum type for [`OpenDeviceError`].
 #[derive(Debug, thiserror::Error)]
 #[error(transparent)]
 #[non_exhaustive]
@@ -33,12 +38,14 @@ pub enum OpenDeviceErrorKind {
     Ibverbs(#[from] io::Error),
 }
 
+/// The RDMA device list which contains all RDMA devices based on the environment configuration.
 pub struct DeviceList {
     devices: *mut *mut ibv_device,
     num_devices: usize,
 }
 
 impl DeviceList {
+    /// Get a new RDMA device list based on current environment.
     pub fn new() -> Result<DeviceList, GetDeviceListError> {
         let mut num_devices: i32 = 0;
         let devices = unsafe { ibv_get_device_list(&mut num_devices as *mut _) };
@@ -52,6 +59,7 @@ impl DeviceList {
         })
     }
 
+    /// Get a device list iterator.
     pub fn iter(&self) -> DeviceListIter<'_> {
         DeviceListIter {
             current: 0,
@@ -60,10 +68,12 @@ impl DeviceList {
         }
     }
 
+    /// Get a device list slice from current device list.
     pub fn as_device_slice<'list>(&'list self) -> &'list [Device<'list>] {
         unsafe { std::slice::from_raw_parts(self.devices as *const Device<'list>, self.num_devices) }
     }
 
+    /// Get the device from device list by index.
     pub fn get(&self, index: usize) -> Option<Device<'_>> {
         if index >= self.num_devices {
             None
@@ -79,10 +89,12 @@ impl DeviceList {
         }
     }
 
+    /// Get the device list length.
     pub fn len(&self) -> usize {
         self.num_devices
     }
 
+    /// Check if current device list is empty.
     pub fn is_empty(&self) -> bool {
         self.num_devices == 0
     }
@@ -115,6 +127,7 @@ impl<'list> IntoIterator for &'list DeviceList {
     }
 }
 
+/// The iterator of the [`DeviceList`].
 pub struct DeviceListIter<'list> {
     current: usize,
     total: usize,
@@ -137,6 +150,7 @@ impl<'list> Iterator for DeviceListIter<'list> {
     }
 }
 
+/// The underlying transport type of the device.
 #[repr(i32)]
 #[derive(PartialEq, Eq, Debug)]
 pub enum TransportType {
@@ -194,6 +208,8 @@ impl Device<'_> {
         }
     }
 
+    /// Open the device to create a [`DeviceContext`] for querying / creating all other RDMA
+    /// resources later.
     pub fn open(&self) -> Result<DeviceContext, OpenDeviceError> {
         unsafe {
             let context = ibv_open_device(self.device);
@@ -205,7 +221,7 @@ impl Device<'_> {
     }
 }
 
-/// Trait for common device information access
+/// Trait for common device information access.
 pub trait DeviceInfo {
     /// Get the name of the device, for example, `mlx5_0`.
     fn name(&self) -> String;
