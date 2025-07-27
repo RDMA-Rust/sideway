@@ -1,14 +1,17 @@
+//! Users need to register memory they allocated as memory region for accessing it later.
 use rdma_mummy_sys::{ibv_dereg_mr, ibv_mr, ibv_reg_mr};
 use std::{io, marker::PhantomData, ptr::NonNull};
 
 use super::protection_domain::ProtectionDomain;
 use super::AccessFlags;
 
+/// Error returned by [`ProtectionDomain::reg_mr`] for registering a new RDMA MR.
 #[derive(Debug, thiserror::Error)]
 #[error("failed to register memory region")]
 #[non_exhaustive]
 pub struct RegisterMemoryRegionError(#[from] pub RegisterMemoryRegionErrorKind);
 
+/// The enum type for [`RegisterMemoryRegionError`].
 #[derive(Debug, thiserror::Error)]
 #[error(transparent)]
 #[non_exhaustive]
