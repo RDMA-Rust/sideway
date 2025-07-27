@@ -1,3 +1,8 @@
+//! A protection domain is used to associate [`QueuePair`]s with [`MemoryRegion`]s, as a means for
+//! enabling and controlling network adapter access to Host System memory.
+//!
+//! [`QueuePair`]: crate::ibverbs::queue_pair::QueuePair
+//!
 use rdma_mummy_sys::{ibv_dealloc_pd, ibv_pd};
 use std::marker::PhantomData;
 use std::ptr::NonNull;
@@ -9,6 +14,8 @@ use super::{
     AccessFlags,
 };
 
+/// A protection domain that could be used to creating RDMA QP and RDMA MR on it to associate them
+/// together.
 #[derive(Debug)]
 pub struct ProtectionDomain<'ctx> {
     pub(crate) pd: NonNull<ibv_pd>,
@@ -47,6 +54,8 @@ impl ProtectionDomain<'_> {
         MemoryRegion::reg_mr(self, ptr, len, access)
     }
 
+    /// Create a [`QueuePairBuilder`] for building QPs on this protection domain
+    /// later.
     pub fn create_qp_builder(&self) -> QueuePairBuilder {
         QueuePairBuilder::new(self)
     }
