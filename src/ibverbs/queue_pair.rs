@@ -4,7 +4,7 @@ use bitmask_enum::bitmask;
 use rdma_mummy_sys::{
     ibv_create_qp, ibv_create_qp_ex, ibv_data_buf, ibv_destroy_qp, ibv_modify_qp, ibv_post_recv, ibv_post_send, ibv_qp,
     ibv_qp_attr, ibv_qp_attr_mask, ibv_qp_cap, ibv_qp_create_send_ops_flags, ibv_qp_ex, ibv_qp_init_attr,
-    ibv_qp_init_attr_ex, ibv_qp_init_attr_mask, ibv_qp_state, ibv_qp_to_qp_ex, ibv_qp_type, ibv_recv_wr,
+    ibv_qp_init_attr_ex, ibv_qp_init_attr_mask, ibv_qp_state, ibv_qp_to_qp_ex, ibv_qp_type, ibv_query_qp, ibv_recv_wr,
     ibv_rx_hash_conf, ibv_send_flags, ibv_send_wr, ibv_sge, ibv_wr_abort, ibv_wr_complete, ibv_wr_opcode,
     ibv_wr_rdma_read, ibv_wr_rdma_write, ibv_wr_rdma_write_imm, ibv_wr_send, ibv_wr_send_imm, ibv_wr_set_inline_data,
     ibv_wr_set_inline_data_list, ibv_wr_set_sge, ibv_wr_set_sge_list, ibv_wr_start,
@@ -37,6 +37,20 @@ pub struct CreateQueuePairError(#[from] pub CreateQueuePairErrorKind);
 #[error(transparent)]
 #[non_exhaustive]
 pub enum CreateQueuePairErrorKind {
+    Ibverbs(#[from] io::Error),
+}
+
+/// Error returned by [`QueuePair::query`] for querying a RDMA QP's attributes.
+#[derive(Debug, thiserror::Error)]
+#[error("failed to query queue pair")]
+#[non_exhaustive]
+pub struct QueryQueuePairError(#[from] pub QueryQueuePairErrorKind);
+
+/// The enum type for [`QueryQueuePairError`].
+#[derive(Debug, thiserror::Error)]
+#[error(transparent)]
+#[non_exhaustive]
+pub enum QueryQueuePairErrorKind {
     Ibverbs(#[from] io::Error),
 }
 
@@ -307,6 +321,30 @@ pub trait QueuePair {
                 .into()),
                 err => Err(ModifyQueuePairErrorKind::Ibverbs(io::Error::from_raw_os_error(err)).into()),
             }
+        }
+    }
+
+    /// Query the [QueuePair]'s attributes. Specify the attributes to query by providing a mask.
+    fn query(
+        &self, mask: QueuePairAttributeMask,
+    ) -> Result<(QueuePairAttribute, QueuePairInitAttribute), QueryQueuePairError> {
+        let mut attr = QueuePairAttribute::default();
+        let mut init_attr = QueuePairInitAttribute::default();
+
+        attr.attr_mask = mask;
+
+        let result = unsafe {
+            ibv_query_qp(
+                self.qp().as_ptr(),
+                &mut attr.attr as *mut _,
+                mask.bits(),
+                &mut init_attr.init_attr as *mut _,
+            )
+        };
+
+        match result {
+            0 => Ok((attr, init_attr)),
+            err => Err(QueryQueuePairErrorKind::Ibverbs(io::Error::from_raw_os_error(err)).into()),
         }
     }
 
@@ -878,11 +916,21 @@ impl QueuePairAttribute {
         self
     }
 
+    /// Get the [`QueuePair`] state you filled in or queried from [`QueuePair::query`].
+    pub fn state(&self) -> QueuePairState {
+        self.attr.qp_state.into()
+    }
+
     /// Setup the primary `p_key` index.
     pub fn setup_pkey_index(&mut self, pkey_index: u16) -> &mut Self {
         self.attr.pkey_index = pkey_index;
         self.attr_mask |= QueuePairAttributeMask::PartitionKeyIndex;
         self
+    }
+
+    /// Get the primary `p_key` index you filled in or queried from [`QueuePair::query`].
+    pub fn pkey_index(&self) -> u16 {
+        self.attr.pkey_index
     }
 
     /// Setup the primary physical port number associated with this [`QueuePair`].
@@ -895,6 +943,11 @@ impl QueuePairAttribute {
         self.attr.port_num = port_num;
         self.attr_mask |= QueuePairAttributeMask::Port;
         self
+    }
+
+    /// Get the primary physical port number you filled in or queried from [`QueuePair::query`].
+    pub fn port(&self) -> u8 {
+        self.attr.port_num
     }
 
     /// Setup allowed remote operations for incoming packets. It's either 0 or
@@ -917,6 +970,12 @@ impl QueuePairAttribute {
         self
     }
 
+    /// Get the allowed remote operations for incoming packets you filled in or queried from
+    /// [`QueuePair::query`].
+    pub fn access_flags(&self) -> AccessFlags {
+        AccessFlags::from(self.attr.qp_access_flags as i32)
+    }
+
     /// Setup the path MTU, which is the maximum payload size of a packet that can be transferred in
     /// the path. Just like TCP's MTU.
     ///
@@ -931,6 +990,11 @@ impl QueuePairAttribute {
         self.attr.path_mtu = path_mtu as _;
         self.attr_mask |= QueuePairAttributeMask::PathMtu;
         self
+    }
+
+    /// Get the path MTU you filled in or queried from [`QueuePair::query`].
+    pub fn path_mtu(&self) -> Mtu {
+        self.attr.path_mtu.into()
     }
 
     /// Setup the destination [`QueuePair`] number for setting up a new connection, 24 bits only.
@@ -950,6 +1014,11 @@ impl QueuePairAttribute {
         self
     }
 
+    /// Get the destination [`QueuePair`] number you filled in or queried from [`QueuePair::query`].
+    pub fn dest_qp_num(&self) -> u32 {
+        self.attr.dest_qp_num
+    }
+
     /// Setup the initial Packet Sequence Number (PSN) required for received packets for this
     /// [`QueuePair`], which means this should be exactly the same with remote side's sq psn.
     /// 24 bits only.
@@ -967,12 +1036,24 @@ impl QueuePairAttribute {
         self
     }
 
+    /// Get the initial Packet Sequence Number (PSN) required for received packets you filled in or
+    /// queried from [`QueuePair::query`].
+    pub fn rq_psn(&self) -> u32 {
+        self.attr.rq_psn
+    }
+
     /// Setup the initial Packet Sequence Number (PSN) to be used in sent packets from this
     /// [`QueuePair`], 24 bits only.
     pub fn setup_sq_psn(&mut self, sq_psn: u32) -> &mut Self {
         self.attr.sq_psn = sq_psn;
         self.attr_mask |= QueuePairAttributeMask::SendQueuePacketSequenceNumber;
         self
+    }
+
+    /// Get the initial Packet Sequence Number (PSN) required for sent packets you filled in or
+    /// queried from [`QueuePair::query`].
+    pub fn sq_psn(&self) -> u32 {
+        self.attr.sq_psn
     }
 
     /// Setup the number of RDMA Read & atomic operations outstanding at any time that can be
@@ -990,6 +1071,12 @@ impl QueuePairAttribute {
         self
     }
 
+    /// Get the the number of RDMA Read & atomic operations outstanding at any time you filled in or
+    /// queried from [`QueuePair::query`].
+    pub fn max_read_atomic(&self) -> u8 {
+        self.attr.max_rd_atomic
+    }
+
     /// Setup the number of RDMA Read & atomic operations outstanding at any time that can be
     /// handled by this [`QueuePair`] as a **destination**.
     ///
@@ -1005,6 +1092,12 @@ impl QueuePairAttribute {
         self
     }
 
+    /// Get the the destination number of RDMA Read & atomic operations outstanding at any time you
+    /// filled in or queried from [`QueuePair::query`].
+    pub fn max_dest_read_atomic(&self) -> u8 {
+        self.attr.max_dest_rd_atomic
+    }
+
     /// Setup the minimum Receiver Not Ready (RNR) NACK timeout. When an incoming message to this
     /// [`QueuePair`] should consume a Work Request from the Receive Queue, but not Work Request is
     /// outstanding on that Queue, the [`QueuePair`] will send an RNR NAK packet to the initiator.
@@ -1013,6 +1106,12 @@ impl QueuePairAttribute {
         self.attr.min_rnr_timer = min_rnr_timer;
         self.attr_mask |= QueuePairAttributeMask::MinResponderNotReadyTimer;
         self
+    }
+
+    /// Get the minimum Receiver Not Ready (RNR) NACK timeout you filled in or queried from
+    /// [`QueuePair::query`].
+    pub fn min_rnr_timer(&self) -> u8 {
+        self.attr.min_rnr_timer
     }
 
     /// Setup the minimum timeout that a [`QueuePair`] waits for ACK / NACK from remote
@@ -1031,6 +1130,12 @@ impl QueuePairAttribute {
         self
     }
 
+    /// Get the minimum timeout that a [`QueuePair`] waits for ACK / NACK from remote you filled in
+    /// or queried from [`QueuePair::query`].
+    pub fn timeout(&self) -> u8 {
+        self.attr.timeout
+    }
+
     /// Setup the total number of times that the [`QueuePair`] will try to resend the packets before
     /// reporting an error because the remote side doesn't answer in the primary path (send an ACK
     /// or NACK packet).
@@ -1046,6 +1151,12 @@ impl QueuePairAttribute {
         self
     }
 
+    /// Get the total number of times that the [`QueuePair`] will try to resend the packets before
+    /// reporting an error, the value would be you filled in or queried from [`QueuePair::query`].
+    pub fn retry_cnt(&self) -> u8 {
+        self.attr.retry_cnt
+    }
+
     /// Setup the total number of times that the [`QueuePair`] will try to resend the packets when
     /// an Receiver Not Ready (RNR) NACK was sent by the remote [`QueuePair`] before reporting an
     /// error.
@@ -1055,6 +1166,13 @@ impl QueuePairAttribute {
         self
     }
 
+    /// Get the total number of times that the [`QueuePair`] will try to resend the packets when
+    /// an Receiver Not Ready (RNR) NACK was sent by the remote [`QueuePair`] before reporting an
+    /// error, the value would be you filled in or queried from [`QueuePair::query`].
+    pub fn rnr_retry(&self) -> u8 {
+        self.attr.rnr_retry
+    }
+
     /// Setup the address vector of the primary path which describes the path information of the
     /// remote [`QueuePair`], for detailed information, you could take [`AddressHandleAttribute`] as
     /// a reference.
@@ -1062,6 +1180,55 @@ impl QueuePairAttribute {
         self.attr.ah_attr = ah_attr.attr;
         self.attr_mask |= QueuePairAttributeMask::AddressVector;
         self
+    }
+}
+
+/// Describes the requested attributes of a newly created [`QueuePair`].
+pub struct QueuePairInitAttribute {
+    init_attr: ibv_qp_init_attr,
+}
+
+impl Default for QueuePairInitAttribute {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl QueuePairInitAttribute {
+    pub fn new() -> Self {
+        QueuePairInitAttribute {
+            init_attr: unsafe { MaybeUninit::zeroed().assume_init() },
+        }
+    }
+
+    /// Get the maximum number of outstanding Work Requests that can be posted to the Send Queue in
+    /// that QP.
+    pub fn max_send_wr(&self) -> u32 {
+        self.init_attr.cap.max_send_wr
+    }
+
+    /// Get the maximum number of outstanding Work Requests that can be posted to the Receive Queue
+    /// in that QP.
+    pub fn max_recv_wr(&self) -> u32 {
+        self.init_attr.cap.max_recv_wr
+    }
+
+    /// The maximum number of scatter/gather elements in any Work Request that can be posted to the
+    /// Send Queue in that QP.
+    pub fn max_send_sge(&self) -> u32 {
+        self.init_attr.cap.max_send_sge
+    }
+
+    /// The maximum number of scatter/gather elements in any Work Request that can be posted to the
+    /// Receive Queue in that QP.
+    pub fn max_recv_sge(&self) -> u32 {
+        self.init_attr.cap.max_recv_sge
+    }
+
+    /// The maximum message size (in bytes) that can be posted inline to the Send Queue. 0, if no
+    /// inline message is requested.
+    pub fn max_inline_data(&self) -> u32 {
+        self.init_attr.cap.max_inline_data
     }
 }
 
@@ -1699,6 +1866,90 @@ mod tests {
     use crate::ibverbs::device;
 
     #[test]
+    fn test_query_qp() -> Result<(), Box<dyn std::error::Error>> {
+        let device_list = device::DeviceList::new()?;
+        match device_list.get(0) {
+            Some(device) => {
+                let ctx = device.open()?;
+
+                let pd = ctx.alloc_pd()?;
+                let memory = [1, 2, 3, 4];
+                let mr_handle = memory.as_ptr() as usize;
+                let mr = unsafe {
+                    pd.reg_mr(mr_handle, 16, AccessFlags::LocalWrite | AccessFlags::RemoteWrite)
+                        .unwrap()
+                };
+
+                let cq = ctx.create_cq_builder().setup_cqe(2).build_ex()?;
+
+                let mut qp = pd.create_qp_builder().setup_send_cq(&cq).setup_recv_cq(&cq).build()?;
+
+                let mut guard = qp.start_post_recv();
+                unsafe {
+                    let handle = guard.construct_wr(1);
+                    handle.setup_sge(mr.lkey(), mr.get_ptr() as u64, 1);
+                    match guard.post() {
+                        Err(PostRecvError::InvalidWorkRequest(_)) => {},
+                        other => panic!("Expected InvalidWorkRequest error, got: {other:?}"),
+                    }
+                }
+
+                let mut attr = QueuePairAttribute::new();
+                attr.setup_state(QueuePairState::Init)
+                    .setup_pkey_index(0)
+                    .setup_port(1)
+                    .setup_access_flags(AccessFlags::RemoteWrite);
+                qp.modify(&attr)?;
+
+                let mut attr = QueuePairAttribute::new();
+                attr.setup_state(QueuePairState::ReadyToReceive)
+                    .setup_path_mtu(Mtu::Mtu1024)
+                    .setup_dest_qp_num(1024)
+                    .setup_rq_psn(1024)
+                    .setup_max_dest_read_atomic(0)
+                    .setup_min_rnr_timer(0);
+
+                // setup address vector
+                let mut ah_attr = AddressHandleAttribute::new();
+                let gid_entries = ctx.query_gid_table().unwrap();
+                let gid = gid_entries
+                    .iter()
+                    .find(|&&gid| !gid.gid().is_unicast_link_local() || gid.gid_type() == GidType::RoceV1)
+                    .unwrap();
+
+                ah_attr
+                    .setup_dest_lid(1)
+                    .setup_port(1)
+                    .setup_service_level(1)
+                    .setup_grh_src_gid_index(gid.gid_index().try_into().unwrap())
+                    .setup_grh_dest_gid(&gid.gid())
+                    .setup_grh_hop_limit(64);
+                attr.setup_address_vector(&ah_attr);
+                qp.modify(&attr)?;
+
+                let mask = QueuePairAttributeMask::AccessFlags
+                    | QueuePairAttributeMask::PathMtu
+                    | QueuePairAttributeMask::DestinationQueuePairNumber
+                    | QueuePairAttributeMask::Port;
+                let (attr, init_attr) = qp.query(mask)?;
+
+                assert_eq!(attr.access_flags(), AccessFlags::RemoteWrite);
+                assert_eq!(attr.dest_qp_num(), 1024);
+                assert_eq!(attr.path_mtu(), Mtu::Mtu1024);
+                assert_eq!(attr.port(), 1);
+
+                assert!(init_attr.max_send_wr() >= 16);
+                assert!(init_attr.max_recv_wr() >= 16);
+                assert!(init_attr.max_send_sge() >= 1);
+                assert!(init_attr.max_recv_sge() >= 1);
+
+                Ok(())
+            },
+            None => Ok(()),
+        }
+    }
+
+    #[test]
     fn test_post_recv_errors() -> Result<(), Box<dyn std::error::Error>> {
         let device_list = device::DeviceList::new()?;
         match device_list.get(0) {
@@ -1736,7 +1987,7 @@ mod tests {
                 attr.setup_state(QueuePairState::Init)
                     .setup_pkey_index(0)
                     .setup_port(1)
-                    .setup_access_flags(AccessFlags::LocalWrite | AccessFlags::RemoteWrite);
+                    .setup_access_flags(AccessFlags::RemoteWrite);
                 qp.modify(&attr)?;
 
                 let mut attr = QueuePairAttribute::new();
