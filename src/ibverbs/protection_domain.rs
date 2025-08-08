@@ -50,13 +50,13 @@ impl ProtectionDomain<'_> {
     /// and that the memory remains accessible and unmodified as needed.
     pub unsafe fn reg_mr(
         &self, ptr: usize, len: usize, access: AccessFlags,
-    ) -> Result<MemoryRegion, RegisterMemoryRegionError> {
+    ) -> Result<MemoryRegion<'_>, RegisterMemoryRegionError> {
         MemoryRegion::reg_mr(self, ptr, len, access)
     }
 
     /// Create a [`QueuePairBuilder`] for building QPs on this protection domain
     /// later.
-    pub fn create_qp_builder(&self) -> QueuePairBuilder {
+    pub fn create_qp_builder(&self) -> QueuePairBuilder<'_> {
         QueuePairBuilder::new(self)
     }
 }
