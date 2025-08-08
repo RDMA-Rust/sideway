@@ -476,7 +476,7 @@ impl Drop for DeviceContext {
 
 impl DeviceContext {
     /// Allocate a protection domain.
-    pub fn alloc_pd(&self) -> Result<ProtectionDomain, AllocateProtectionDomainError> {
+    pub fn alloc_pd(&self) -> Result<ProtectionDomain<'_>, AllocateProtectionDomainError> {
         let pd = unsafe { ibv_alloc_pd(self.context) };
 
         if pd.is_null() {
@@ -489,7 +489,7 @@ impl DeviceContext {
     }
 
     /// Create a completion event channel.
-    pub fn create_comp_channel(&self) -> Result<CompletionChannel, CreateCompletionChannelError> {
+    pub fn create_comp_channel(&self) -> Result<CompletionChannel<'_>, CreateCompletionChannelError> {
         CompletionChannel::new(self)
     }
 
@@ -498,7 +498,7 @@ impl DeviceContext {
     /// [`BasicCompletionQueue`]: crate::ibverbs::completion::BasicCompletionQueue
     /// [`ExtendedCompletionQueue`]: crate::ibverbs::completion::ExtendedCompletionQueue
     ///
-    pub fn create_cq_builder(&self) -> CompletionQueueBuilder {
+    pub fn create_cq_builder(&self) -> CompletionQueueBuilder<'_> {
         CompletionQueueBuilder::new(self)
     }
 
