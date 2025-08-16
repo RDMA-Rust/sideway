@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.1](https://github.com/RDMA-Rust/sideway/compare/v0.3.0...v0.3.1) - 2025-08-16
+
+### Added
+
+- *(ibverbs)* add QueuePair::query for querying QP attributes
+- *(qp)* support send_imm / write_imm and read opcode
+
+### Other
+
+- *(ibverbs)* add elided lifetime marks to make cargo clippy quiet
+- add documentations on PD and MR
+- add documentation for completion module
+- add documentation for device module
+- add documentation for device context module
+- add documentation for address module
+- add documentation for queue pair and access flags
+- use variables directly in the `format!` string
+
 ## [0.3.0](https://github.com/RDMA-Rust/sideway/compare/v0.2.1...v0.3.0) - 2025-06-15
 
 ### Added
