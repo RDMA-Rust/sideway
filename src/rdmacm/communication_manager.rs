@@ -1,5 +1,6 @@
 use std::any::Any;
 use std::collections::HashMap;
+use std::os::fd::{AsRawFd, RawFd};
 use std::ptr::{null, null_mut};
 use std::sync::{LazyLock, Mutex, Weak};
 use std::time::Duration;
@@ -283,6 +284,14 @@ impl EventChannel {
             cm_id,
             listener_id,
         })
+    }
+}
+
+impl AsRawFd for EventChannel {
+    fn as_raw_fd(&self) -> RawFd {
+        unsafe {
+            self.channel.as_ref().fd
+        }
     }
 }
 
