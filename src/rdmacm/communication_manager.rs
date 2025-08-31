@@ -289,9 +289,7 @@ impl EventChannel {
 
 impl AsRawFd for EventChannel {
     fn as_raw_fd(&self) -> RawFd {
-        unsafe {
-            self.channel.as_ref().fd
-        }
+        unsafe { self.channel.as_ref().fd }
     }
 }
 
@@ -512,8 +510,10 @@ impl ConnectionParameter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use polling::{Event, Events, Poller};
     use std::net::{IpAddr, SocketAddr};
     use std::str::FromStr;
+    use std::thread;
 
     #[test]
     fn test_cm_id_reference_count() -> Result<(), Box<dyn std::error::Error>> {
@@ -544,6 +544,62 @@ mod tests {
 
                 assert_eq!(Arc::strong_count(&id), 2);
                 assert_eq!(Arc::strong_count(&cm_id), 2);
+
+                Ok(())
+            },
+            Err(_) => Ok(()),
+        }
+    }
+
+    #[test]
+    fn test_channel_event_fd() -> Result<(), Box<dyn std::error::Error>> {
+        match EventChannel::new() {
+            Ok(mut channel) => {
+                let id = channel.create_id(PortSpace::Tcp).unwrap();
+
+                assert_eq!(Arc::strong_count(&id), 1);
+
+                unsafe {
+                    let fd = channel.as_raw_fd();
+                    let previous = libc::fcntl(fd, libc::F_GETFL);
+                    if previous < 0 {
+                        return Err(io::Error::last_os_error().into());
+                    }
+                    let new = previous | libc::O_NONBLOCK;
+                    if libc::fcntl(fd, libc::F_SETFL, new) < 0 {
+                        return Err(io::Error::last_os_error().into());
+                    }
+                }
+
+                let dispatcher = thread::spawn(move || {
+                    let poller = Poller::new().expect("Failed to create poller");
+                    let key = 233;
+
+                    unsafe { poller.add(&channel, Event::readable(key)).unwrap() };
+
+                    let mut events = Events::new();
+                    events.clear();
+                    poller.wait(&mut events, None).unwrap();
+
+                    assert_eq!(events.len(), 1);
+
+                    for ev in events.iter() {
+                        assert_eq!(ev.key, key);
+
+                        let event = channel.get_cm_event().unwrap();
+                        assert_eq!(event.event_type(), EventType::AddressResolved);
+
+                        event.ack().unwrap();
+                    }
+                });
+
+                let _ = id.resolve_addr(
+                    None,
+                    SocketAddr::from((IpAddr::from_str("127.0.0.1").expect("Invalid IP address"), 0)),
+                    Duration::new(0, 200000000),
+                );
+
+                dispatcher.join().unwrap();
 
                 Ok(())
             },
