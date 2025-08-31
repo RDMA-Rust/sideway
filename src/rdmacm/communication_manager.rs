@@ -111,6 +111,200 @@ pub enum PortSpace {
     Udp = rdma_port_space::RDMA_PS_UDP as isize,
 }
 
+/// Error returned by [`EventChannel::new`] for creating a new RDMA CM [`EventChannel`].
+#[derive(Debug, thiserror::Error)]
+#[error("failed to create rdma cm event channel")]
+#[non_exhaustive]
+pub struct CreateEventChannelError(#[from] pub CreateEventChannelErrorKind);
+
+/// The enum type for [`CreateEventChannelError`].
+#[derive(Debug, thiserror::Error)]
+#[error(transparent)]
+#[non_exhaustive]
+pub enum CreateEventChannelErrorKind {
+    Rdmacm(#[from] io::Error),
+}
+
+/// Error returned by [`EventChannel::create_id`] for creating a new RDMA CM [`Identifier`].
+#[derive(Debug, thiserror::Error)]
+#[error("failed to create rdma cm identifier")]
+#[non_exhaustive]
+pub struct CreateIdentifierError(#[from] pub CreateIdentifierErrorKind);
+
+/// The enum type for [`CreateIdentifierError`].
+#[derive(Debug, thiserror::Error)]
+#[error(transparent)]
+#[non_exhaustive]
+pub enum CreateIdentifierErrorKind {
+    Rdmacm(#[from] io::Error),
+}
+
+/// Error returned by [`EventChannel::get_cm_event`] for getting a new event from [`EventChannel`].
+#[derive(Debug, thiserror::Error)]
+#[error("failed to get rdma cm event")]
+#[non_exhaustive]
+pub struct GetEventError(#[from] pub GetEventErrorKind);
+
+/// The enum type for [`GetEventError`].
+#[derive(Debug, thiserror::Error)]
+#[error(transparent)]
+#[non_exhaustive]
+pub enum GetEventErrorKind {
+    Rdmacm(#[from] io::Error),
+    #[error("no event in event channel")]
+    NoEvent,
+}
+
+/// Error returned by [`Event::ack`] for acknowledging an event.
+#[derive(Debug, thiserror::Error)]
+#[error("failed to acknowledge rdma cm event")]
+#[non_exhaustive]
+pub struct AcknowledgeEventError(#[from] pub AcknowledgeEventErrorKind);
+
+/// The enum type for [`AcknowledgeEventError`].
+#[derive(Debug, thiserror::Error)]
+#[error(transparent)]
+#[non_exhaustive]
+pub enum AcknowledgeEventErrorKind {
+    Rdmacm(#[from] io::Error),
+}
+
+/// Error returned by [`Identifier::bind_addr`] for binding an IP address to [`Identifier`].
+#[derive(Debug, thiserror::Error)]
+#[error("failed to bind address (addr={addr})")]
+#[non_exhaustive]
+pub struct BindAddressError {
+    pub addr: SocketAddr,
+    pub source: BindAddressErrorKind,
+}
+
+/// The enum type for [`BindAddressError`].
+#[derive(Debug, thiserror::Error)]
+#[error(transparent)]
+#[non_exhaustive]
+pub enum BindAddressErrorKind {
+    Rdmacm(#[from] io::Error),
+}
+
+/// Error returned by [`Identifier::resolve_addr`] for resolving address information to destination
+/// address for an [`Identifier`].
+#[derive(Debug, thiserror::Error)]
+#[error("failed to resolve address (src_addr={:?}, dst_addr={dst_addr})", src_addr)]
+#[non_exhaustive]
+pub struct ResolveAddressError {
+    pub src_addr: Option<SocketAddr>,
+    pub dst_addr: SocketAddr,
+    pub source: ResolveAddressErrorKind,
+}
+
+/// The enum type for [`ResolveAddressError`].
+#[derive(Debug, thiserror::Error)]
+#[error(transparent)]
+#[non_exhaustive]
+pub enum ResolveAddressErrorKind {
+    Rdmacm(#[from] io::Error),
+}
+
+/// Error returned by [`Identifier::resolve_route`] for resolving routing information for an
+/// [`Identifier`].
+#[derive(Debug, thiserror::Error)]
+#[error("failed to resolve route")]
+#[non_exhaustive]
+pub struct ResolveRouteError(#[from] pub ResolveRouteErrorKind);
+
+/// The enum type for [`ResolveRouteError`].
+#[derive(Debug, thiserror::Error)]
+#[error(transparent)]
+#[non_exhaustive]
+pub enum ResolveRouteErrorKind {
+    Rdmacm(#[from] io::Error),
+}
+
+/// Error returned by [`Identifier::listen`] for listening new connection requests.
+#[derive(Debug, thiserror::Error)]
+#[error("failed to listen")]
+#[non_exhaustive]
+pub struct ListenError(#[from] pub ListenErrorKind);
+
+/// The enum type for [`ListenError`].
+#[derive(Debug, thiserror::Error)]
+#[error(transparent)]
+#[non_exhaustive]
+pub enum ListenErrorKind {
+    Rdmacm(#[from] io::Error),
+}
+
+/// Error returned by [`Identifier::connect`] for connecting to a remote endpoint.
+#[derive(Debug, thiserror::Error)]
+#[error("failed to connect")]
+#[non_exhaustive]
+pub struct ConnectError(#[from] pub ConnectErrorKind);
+
+/// The enum type for [`ConnectError`].
+#[derive(Debug, thiserror::Error)]
+#[error(transparent)]
+#[non_exhaustive]
+pub enum ConnectErrorKind {
+    Rdmacm(#[from] io::Error),
+}
+
+/// Error returned by [`Identifier::accept`] for accepting a new connection.
+#[derive(Debug, thiserror::Error)]
+#[error("failed to accept")]
+#[non_exhaustive]
+pub struct AcceptError(#[from] pub AcceptErrorKind);
+
+/// The enum type for [`AcceptError`].
+#[derive(Debug, thiserror::Error)]
+#[error(transparent)]
+#[non_exhaustive]
+pub enum AcceptErrorKind {
+    Rdmacm(#[from] io::Error),
+}
+
+/// Error returned by [`Identifier::establish`] for establishing connection setup.
+#[derive(Debug, thiserror::Error)]
+#[error("failed to establish")]
+#[non_exhaustive]
+pub struct EstablishError(#[from] pub EstablishErrorKind);
+
+/// The enum type for [`EstablishError`].
+#[derive(Debug, thiserror::Error)]
+#[error(transparent)]
+#[non_exhaustive]
+pub enum EstablishErrorKind {
+    Rdmacm(#[from] io::Error),
+}
+
+/// Error returned by [`Identifier::disconnect`] for disconnecting a connection.
+#[derive(Debug, thiserror::Error)]
+#[error("failed to disconnect")]
+#[non_exhaustive]
+pub struct DisconnectError(#[from] pub DisconnectErrorKind);
+
+/// The enum type for [`DisconnectError`].
+#[derive(Debug, thiserror::Error)]
+#[error(transparent)]
+#[non_exhaustive]
+pub enum DisconnectErrorKind {
+    Rdmacm(#[from] io::Error),
+}
+
+/// Error returned by [`Identifier::get_qp_attr`] for getting current stage's
+/// [`QueuePairAttribute`] for modifying a QP.
+#[derive(Debug, thiserror::Error)]
+#[error("failed to get qp attribute")]
+#[non_exhaustive]
+pub struct GetQueuePairAttributeError(#[from] pub GetQueuePairAttributeErrorKind);
+
+/// The enum type for [`GetQueuePairAttributeError`].
+#[derive(Debug, thiserror::Error)]
+#[error(transparent)]
+#[non_exhaustive]
+pub enum GetQueuePairAttributeErrorKind {
+    Rdmacm(#[from] io::Error),
+}
+
 impl Drop for EventChannel {
     fn drop(&mut self) {
         unsafe {
@@ -175,11 +369,11 @@ impl Event {
     ///
     /// [`get_cm_event`]: crate::rdmacm::communication_manager::EventChannel::get_cm_event
     ///
-    pub fn ack(mut self) -> Result<(), String> {
+    pub fn ack(mut self) -> Result<(), AcknowledgeEventError> {
         let ret = unsafe { rdma_ack_cm_event(self.event.as_mut()) };
 
         if ret < 0 {
-            return Err(format!("Failed to ack cm event {:?}", io::Error::last_os_error()));
+            return Err(AcknowledgeEventErrorKind::Rdmacm(io::Error::last_os_error()).into());
         }
 
         self.cm_id.take();
@@ -200,11 +394,13 @@ impl Drop for Event {
     }
 }
 
-fn new_cm_id_for_raw(raw: *mut rdma_cm_id) -> Result<Arc<Identifier>, String> {
-    let cm = Arc::new(Identifier {
-        cm_id: NonNull::new(raw).unwrap(),
-        user_context: Mutex::new(None),
-    });
+fn new_cm_id_for_raw(raw: *mut rdma_cm_id) -> Arc<Identifier> {
+    let cm = unsafe {
+        Arc::new(Identifier {
+            cm_id: NonNull::new(raw).unwrap_unchecked(),
+            user_context: Mutex::new(None),
+        })
+    };
 
     let weak_cm = Arc::downgrade(&cm.clone());
     let boxed = Box::new(weak_cm);
@@ -214,15 +410,15 @@ fn new_cm_id_for_raw(raw: *mut rdma_cm_id) -> Result<Arc<Identifier>, String> {
         (*raw).context = raw_box as *mut std::ffi::c_void;
     }
 
-    Ok(cm)
+    cm
 }
 
 impl EventChannel {
-    pub fn new() -> Result<EventChannel, String> {
+    pub fn new() -> Result<EventChannel, CreateEventChannelError> {
         let channel = unsafe { rdma_create_event_channel() };
 
         if channel.is_null() {
-            return Err("Failed to create event channel".to_string());
+            return Err(CreateEventChannelErrorKind::Rdmacm(io::Error::last_os_error()).into());
         }
 
         Ok(EventChannel {
@@ -230,24 +426,27 @@ impl EventChannel {
         })
     }
 
-    pub fn create_id(&mut self, port_space: PortSpace) -> Result<Arc<Identifier>, String> {
+    pub fn create_id(&mut self, port_space: PortSpace) -> Result<Arc<Identifier>, CreateIdentifierError> {
         let mut cm_id_ptr: *mut rdma_cm_id = null_mut();
         let ret = unsafe { rdma_create_id(self.channel.as_mut(), &mut cm_id_ptr, null_mut(), port_space as u32) };
 
         if ret < 0 {
-            return Err(format!("Failed to create cm_id {ret}"));
+            return Err(CreateIdentifierErrorKind::Rdmacm(io::Error::last_os_error()).into());
         }
 
-        new_cm_id_for_raw(cm_id_ptr)
+        Ok(new_cm_id_for_raw(cm_id_ptr))
     }
 
-    pub fn get_cm_event(&mut self) -> Result<Event, String> {
+    pub fn get_cm_event(&mut self) -> Result<Event, GetEventError> {
         let mut event_ptr = MaybeUninit::<*mut rdma_cm_event>::uninit();
 
         let ret = unsafe { rdma_get_cm_event(self.channel.as_ptr(), event_ptr.as_mut_ptr()) };
 
         if ret < 0 {
-            return Err(format!("Failed to get cm event {:?}", io::Error::last_os_error()));
+            match io::Error::last_os_error().kind() {
+                io::ErrorKind::WouldBlock => return Err(GetEventErrorKind::NoEvent.into()),
+                err => return Err(GetEventErrorKind::Rdmacm(err.into()).into()),
+            }
         }
 
         let event = unsafe { NonNull::new(event_ptr.assume_init()).unwrap() };
@@ -258,7 +457,7 @@ impl EventChannel {
             assert_ne!(raw_cm_id, null_mut());
             if event.as_ref().event == EventType::ConnectRequest as u32 {
                 // For connect requests, create a new CommunicationManager
-                Some(new_cm_id_for_raw(raw_cm_id).unwrap())
+                Some(new_cm_id_for_raw(raw_cm_id))
             } else {
                 // For other events, return the existing CommunicationManager
                 let context_ptr = (*raw_cm_id).context as *mut Weak<Identifier>;
@@ -329,12 +528,15 @@ impl Identifier {
         unsafe { cm_id.as_ref().port_num }
     }
 
-    pub fn bind_addr(&self, addr: SocketAddr) -> Result<(), String> {
+    pub fn bind_addr(&self, addr: SocketAddr) -> Result<(), BindAddressError> {
         let cm_id = self.cm_id;
         let ret = unsafe { rdma_bind_addr(cm_id.as_ptr(), OsSocketAddr::from(addr).as_mut_ptr()) };
 
         if ret < 0 {
-            return Err(format!("Failed to bind addr {addr:?}, {}", io::Error::last_os_error()));
+            return Err(BindAddressError {
+                addr,
+                source: BindAddressErrorKind::Rdmacm(io::Error::last_os_error()),
+            });
         }
 
         Ok(())
@@ -342,7 +544,7 @@ impl Identifier {
 
     pub fn resolve_addr(
         &self, src_addr: Option<SocketAddr>, dst_addr: SocketAddr, timeout: Duration,
-    ) -> Result<(), String> {
+    ) -> Result<(), ResolveAddressError> {
         let cm_id = self.cm_id;
         let timeout_ms: i32 = timeout.as_millis().try_into().unwrap();
 
@@ -359,31 +561,35 @@ impl Identifier {
         };
 
         if ret < 0 {
-            return Err(format!("Failed to resolve address {ret}"));
+            return Err(ResolveAddressError {
+                src_addr,
+                dst_addr,
+                source: ResolveAddressErrorKind::Rdmacm(io::Error::last_os_error()),
+            });
         }
 
         Ok(())
     }
 
-    pub fn resolve_route(&self, timeout: Duration) -> Result<(), String> {
+    pub fn resolve_route(&self, timeout: Duration) -> Result<(), ResolveRouteError> {
         let cm_id = self.cm_id;
         let timeout_ms: i32 = timeout.as_millis().try_into().unwrap();
 
         let ret = unsafe { rdma_resolve_route(cm_id.as_ptr(), timeout_ms) };
 
         if ret < 0 {
-            return Err(format!("Failed to resolve route {ret}"));
+            return Err(ResolveRouteErrorKind::Rdmacm(io::Error::last_os_error()).into());
         }
 
         Ok(())
     }
 
-    pub fn listen(&self, backlog: i32) -> Result<(), String> {
+    pub fn listen(&self, backlog: i32) -> Result<(), ListenError> {
         let cm_id = self.cm_id;
         let ret = unsafe { rdma_listen(cm_id.as_ptr(), backlog) };
 
         if ret < 0 {
-            return Err(format!("Failed to listen {ret}"));
+            return Err(ListenErrorKind::Rdmacm(io::Error::last_os_error()).into());
         }
 
         Ok(())
@@ -408,52 +614,52 @@ impl Identifier {
         }
     }
 
-    pub fn connect(&self, mut conn_param: ConnectionParameter) -> Result<(), String> {
+    pub fn connect(&self, mut conn_param: ConnectionParameter) -> Result<(), ConnectError> {
         let cm_id = self.cm_id;
         let ret = unsafe { rdma_connect(cm_id.as_ptr(), &mut conn_param.0) };
 
         if ret < 0 {
-            return Err(format!("Failed to connect {:?}", io::Error::last_os_error()));
+            return Err(ConnectErrorKind::Rdmacm(io::Error::last_os_error()).into());
         }
 
         Ok(())
     }
 
-    pub fn disconnect(&self) -> Result<(), String> {
+    pub fn disconnect(&self) -> Result<(), DisconnectError> {
         let cm_id = self.cm_id;
         let ret = unsafe { rdma_disconnect(cm_id.as_ptr()) };
 
         if ret < 0 {
-            return Err(format!("Failed to disconnect {:?}", io::Error::last_os_error()));
+            return Err(DisconnectErrorKind::Rdmacm(io::Error::last_os_error()).into());
         }
 
         Ok(())
     }
 
-    pub fn accept(&self, mut conn_param: ConnectionParameter) -> Result<(), String> {
+    pub fn accept(&self, mut conn_param: ConnectionParameter) -> Result<(), AcceptError> {
         let cm_id = self.cm_id;
 
         let ret = unsafe { rdma_accept(cm_id.as_ptr(), &mut conn_param.0) };
 
         if ret < 0 {
-            return Err(format!("Failed to accept {:?}", io::Error::last_os_error()));
+            return Err(AcceptErrorKind::Rdmacm(io::Error::last_os_error()).into());
         }
 
         Ok(())
     }
 
-    pub fn establish(&self) -> Result<(), String> {
+    pub fn establish(&self) -> Result<(), EstablishError> {
         let cm_id = self.cm_id;
         let ret = unsafe { rdma_establish(cm_id.as_ptr()) };
 
         if ret < 0 {
-            return Err(format!("Failed to establish {:?}", io::Error::last_os_error()));
+            return Err(EstablishErrorKind::Rdmacm(io::Error::last_os_error()).into());
         }
 
         Ok(())
     }
 
-    pub fn get_qp_attr(&self, state: QueuePairState) -> Result<QueuePairAttribute, String> {
+    pub fn get_qp_attr(&self, state: QueuePairState) -> Result<QueuePairAttribute, GetQueuePairAttributeError> {
         let cm_id = self.cm_id;
         let mut attr = MaybeUninit::<ibv_qp_attr>::uninit();
         let mut mask = 0;
@@ -463,7 +669,7 @@ impl Identifier {
         let ret = unsafe { rdma_init_qp_attr(cm_id.as_ptr(), attr.as_mut_ptr(), &mut mask) };
 
         if ret < 0 {
-            return Err(format!("Failed to get qp attr {:?}", io::Error::last_os_error()));
+            return Err(GetQueuePairAttributeErrorKind::Rdmacm(io::Error::last_os_error()).into());
         }
 
         Ok(QueuePairAttribute::from(unsafe { attr.assume_init_ref() }, mask))
@@ -612,25 +818,21 @@ mod tests {
         match EventChannel::new() {
             Ok(mut channel) => {
                 let id = channel.create_id(PortSpace::Tcp).unwrap();
+                let address = SocketAddr::from((IpAddr::from_str("0.0.0.0").expect("Invalid IP address"), 8080));
 
-                let res = id.bind_addr(SocketAddr::from((
-                    IpAddr::from_str("0.0.0.0").expect("Invalid IP address"),
-                    8080,
-                )));
+                let res = id.bind_addr(address);
 
                 assert!(res.is_ok());
 
                 let new_id = channel.create_id(PortSpace::Tcp).unwrap();
 
-                let err = new_id.bind_addr(SocketAddr::from((
-                    IpAddr::from_str("0.0.0.0").expect("Invalid IP address"),
-                    8080,
-                )));
+                let err = new_id.bind_addr(address).err().unwrap();
 
-                assert_eq!(
-                    err.err().unwrap(),
-                    "Failed to bind addr 0.0.0.0:8080, Cannot assign requested address (os error 99)"
-                );
+                assert_eq!(err.addr, address);
+                match err.source {
+                    BindAddressErrorKind::Rdmacm(err) => assert_eq!(err.kind(), io::ErrorKind::AddrNotAvailable),
+                };
+
                 Ok(())
             },
             Err(_) => Ok(()),
