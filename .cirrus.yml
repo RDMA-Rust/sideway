@@ -30,4 +30,4 @@ task:
     - just test-cmtime-with-cov
     - just generate-cov
     - sed -i 's#/tmp/cirrus-ci-build/##g' lcov.info
-    - ./codecov --verbose upload-process --disable-search --fail-on-error -t $CODECOV_TOKEN --git-service github -f ./lcov.info
+    - ./codecov --verbose upload-process --disable-search --fail-on-error --git-service github -f ./lcov.info
