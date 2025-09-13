@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.2](https://github.com/RDMA-Rust/sideway/compare/v0.3.1...v0.3.2) - 2025-09-13
+
+### Added
+
+- *(rdmacm)* define error types for all RDMA CM methods
+- *(rdmacm)* implement AsRawFd for EventChannel
+
+### Other
+
+- remove codecov upload token
+- *(ibverbs)* add more tests for Device and DeviceList
+- *(rdmacm)* add test for using event channel fd in a seperated thread
+
 ## [0.3.1](https://github.com/RDMA-Rust/sideway/compare/v0.3.0...v0.3.1) - 2025-08-16
 
 ### Added
