@@ -15,6 +15,24 @@ no performance guarantee will be provided. Besides, `libibmad`, `libibumad`, wit
 
 ### Install the Dependencies
 
+#### Toolchains
+
+We use `Cargo` and `rustc` to build the whole Rust project. Fetch them using [rustup](https://rustup.rs).
+
+Additionally, `CMake` and `Clang` are needed for building `rdma-mummy-sys`.
+
+- Debian / Ubuntu
+
+```shell
+apt install cmake clang
+```
+
+- Fedora / CentOS / Rocky Linux
+
+```shell
+dnf install cmake clang
+```
+
 #### The rdma-core libraries
 
 Though we don't need rdma-core libraries for compiling (using `rdma-core-mummy`), we still require `rdma-core` installed when running, if not
