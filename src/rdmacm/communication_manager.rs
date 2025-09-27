@@ -1,3 +1,180 @@
+#![allow(clippy::needless_doctest_main)]
+//!
+//! The RDMA CM is a communication manager used to setup reliable, connected and unreliable datagram
+//! transfers. It provides an RDMA transport neutral interface for establishing and tearing down
+//! connections. Instead of operating on socket, users would create an [`EventChannel`] and
+//! [`Identifier`]s to setup the connection.
+//!
+//! # Note
+//!
+//! - Compared to out-of-band connection setup, for example, using TCP / UDP to exchange the QP
+//!   information, the RDMA CM doesn't require user to design the wire format, and provide a more
+//!   unified interface. RDMA CM would also detect program termination and tear down the connection
+//!   automatically. Besides, RDMA CM would use the same UDP source port just as the data path does,
+//!   so that the user would detect the path failure in connection setup phase.
+//! - The original `librdmacm` library provides `rdma_create_ep` and `rdma_create_qp` helpers to
+//!   wrap more `libibverbs` functions, but it limits the user to control the detailed attributes
+//!   of the QP (and the implementation has some [`race condition`]). So we decide not to wrap them,
+//!   and let user to control the QP manually.
+//!
+//! # Examples
+//!
+//! - Server side:
+//! ```no_run
+//! use sideway::ibverbs::queue_pair::{QueuePair, QueuePairState};
+//! use sideway::rdmacm::communication_manager::{ConnectionParameter, EventChannel, EventType, PortSpace};
+//! use std::net::SocketAddr;
+//! use std::str::FromStr;
+//!
+//! fn main() {
+//!     let mut event_channel = EventChannel::new().unwrap();
+//!     let id = event_channel.create_id(PortSpace::Tcp).unwrap();
+//!
+//!     // For RDMA CM, bind to a loopback address would lead to problems, so just bind to `0.0.0.0`
+//!     // or `::` to get connection from any address. You could also bind to a specific address.
+//!     id.bind_addr(SocketAddr::from_str("0.0.0.0:18515").unwrap()).unwrap();
+//!
+//!     id.listen(10).unwrap();
+//!
+//!     while let Ok(event) = event_channel.get_cm_event() {
+//!         match event.event_type() {
+//!             EventType::ConnectRequest => {
+//!                 let new_id = event.cm_id().unwrap();
+//!                 let ctx = new_id.get_device_context().unwrap();
+//!                 let pd = ctx.alloc_pd().unwrap();
+//!                 let cq = ctx.create_cq_builder().setup_cqe(1).build_ex().unwrap();
+//!
+//!                 let mut qp_builder = pd.create_qp_builder();
+//!                 qp_builder
+//!                     .setup_max_send_wr(1)
+//!                     .setup_max_send_sge(1)
+//!                     .setup_max_recv_wr(1)
+//!                     .setup_max_recv_sge(1)
+//!                     .setup_send_cq(&cq)
+//!                     .setup_recv_cq(&cq);
+//!                 let mut qp = qp_builder.build_ex().unwrap();
+//!
+//!                 // You could change the attr after getting it, but for now we use the default one
+//!                 let attr = new_id.get_qp_attr(QueuePairState::Init).unwrap();
+//!                 qp.modify(&attr).unwrap();
+//!
+//!                 let attr = new_id.get_qp_attr(QueuePairState::ReadyToReceive).unwrap();
+//!                 qp.modify(&attr).unwrap();
+//!
+//!                 let attr = new_id.get_qp_attr(QueuePairState::ReadyToSend).unwrap();
+//!                 qp.modify(&attr).unwrap();
+//!
+//!                 let mut param = ConnectionParameter::new();
+//!                 param.setup_qp_number(qp.qp_number());
+//!                 new_id.accept(param).unwrap();
+//!             },
+//!             _ => todo!(),
+//!         }
+//!     }
+//! }
+//! ```
+//!
+//! - Client side:
+//! ```no_run
+//! use ouroboros::self_referencing;
+//! use sideway::ibverbs::completion::{CreateCompletionQueueWorkCompletionFlags, ExtendedCompletionQueue};
+//! use sideway::ibverbs::device_context::DeviceContext;
+//! use sideway::ibverbs::protection_domain::ProtectionDomain;
+//! use sideway::ibverbs::queue_pair::{ExtendedQueuePair, QueuePair, QueuePairState};
+//! use sideway::rdmacm::communication_manager::{ConnectionParameter, EventChannel, EventType, PortSpace};
+//! use std::net::SocketAddr;
+//! use std::str::FromStr;
+//! use std::sync::Arc;
+//! use std::time::Duration;
+//!
+//! #[self_referencing]
+//! struct EndpointResources {
+//!     ctx: Arc<DeviceContext>,
+//!     #[borrows(ctx)]
+//!     #[covariant]
+//!     pd: ProtectionDomain<'this>,
+//!     #[borrows(ctx)]
+//!     #[covariant]
+//!     cq: ExtendedCompletionQueue<'this>,
+//!     #[borrows(pd, cq)]
+//!     #[covariant]
+//!     qp: ExtendedQueuePair<'this>,
+//! }
+//!
+//! fn main() {
+//!     let mut event_channel = EventChannel::new().unwrap();
+//!     let id = event_channel.create_id(PortSpace::Tcp).unwrap();
+//!     let mut resources: Option<EndpointResources> = None;
+//!
+//!     id.resolve_addr(
+//!         None,
+//!         SocketAddr::from_str("172.17.8.28:18515").unwrap(),
+//!         Duration::from_secs(1),
+//!     )
+//!     .unwrap();
+//!
+//!     while let Ok(event) = event_channel.get_cm_event() {
+//!         match event.event_type() {
+//!             EventType::AddressResolved => {
+//!                 id.resolve_route(Duration::from_secs(1)).unwrap();
+//!             },
+//!             EventType::RouteResolved => {
+//!                 let ctx = id.get_device_context().unwrap();
+//!                 resources.get_or_insert_with(|| {
+//!                     EndpointResources::new(
+//!                         ctx,
+//!                         |ctx| {
+//!                             let pd = ctx.alloc_pd().unwrap();
+//!                             pd
+//!                         },
+//!                         |ctx| {
+//!                             let cq = ctx
+//!                                 .create_cq_builder()
+//!                                 .setup_wc_flags(CreateCompletionQueueWorkCompletionFlags::StandardFlags)
+//!                                 .setup_cqe(1)
+//!                                 .build_ex()
+//!                                 .unwrap();
+//!                             cq
+//!                         },
+//!                         |pd, cq| {
+//!                             let qp = pd
+//!                                 .create_qp_builder()
+//!                                 .setup_send_cq(cq)
+//!                                 .setup_recv_cq(cq)
+//!                                 .build_ex()
+//!                                 .unwrap();
+//!                             qp
+//!                         },
+//!                     )
+//!                 });
+//!
+//!                 let attr = id.get_qp_attr(QueuePairState::Init).unwrap();
+//!                 resources.as_mut().unwrap().with_qp_mut(|qp| {
+//!                     qp.modify(&attr).unwrap();
+//!                     let mut param = ConnectionParameter::new();
+//!                     param.setup_qp_number(qp.qp_number());
+//!                     id.connect(param).unwrap()
+//!                 });
+//!             },
+//!             EventType::ConnectResponse => {
+//!                 resources.as_mut().unwrap().with_qp_mut(|qp| {
+//!                     let attr = id.get_qp_attr(QueuePairState::ReadyToReceive).unwrap();
+//!                     qp.modify(&attr).unwrap();
+//!
+//!                     let attr = id.get_qp_attr(QueuePairState::ReadyToSend).unwrap();
+//!                     qp.modify(&attr).unwrap();
+//!
+//!                     id.establish().unwrap();
+//!                 });
+//!             },
+//!             _ => todo!(),
+//!         }
+//!     }
+//! }
+//! ```
+//!
+//! [`race condition`]: https://github.com/linux-rdma/rdma-core/pull/1182
+//!
 use std::any::Any;
 use std::collections::HashMap;
 use std::os::fd::{AsRawFd, RawFd};
@@ -17,6 +194,7 @@ use rdma_mummy_sys::{
 use crate::ibverbs::device_context::DeviceContext;
 use crate::ibverbs::queue_pair::{QueuePairAttribute, QueuePairState};
 
+/// The type of communication [`Event`] which occurred.
 #[repr(u32)]
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum EventType {
@@ -64,32 +242,30 @@ impl From<u32> for EventType {
 
 static DEVICE_LISTS: LazyLock<Mutex<HashMap<usize, Arc<DeviceContext>>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
 
+/// An RDMA event represents an event from an RDMA event channel, reported by an [`Identifier`].
 pub struct Event {
     event: NonNull<rdma_cm_event>,
     cm_id: Option<Arc<Identifier>>,
     listener_id: Option<Arc<Identifier>>,
 }
 
+/// An RDMA event channel is used to create [`Identifier`]s and receive [`Event`]s.
 pub struct EventChannel {
     channel: NonNull<rdma_event_channel>,
 }
 
-// enum QueuePairStatus {
-//     SelfCreatedBound,
-//     SelfCreatedDestroyed,
-//     CommunicationManagerCreated,
-//     CommunicationManagerDestroyed,
-//     NoQueuePairBound,
-// }
-
+/// An RDMA CM identifier (`rdma_cm_id`), conceptually similar to a socket, an [`Identifier`] would
+/// report some of the RDMA CM operations' result as an [`Event`] to its [`EventChannel`].
 pub struct Identifier {
     cm_id: NonNull<rdma_cm_id>,
-    // queue_pair_status: QueuePairStatus,
     user_context: Mutex<Option<Arc<dyn Any + Send + Sync>>>,
 }
 
+/// A connection paramter used for configure the communication when connecting or establishing
+/// datagram communication. Used in [`Identifier::connect`] and [`Identifier::accept`].
 pub struct ConnectionParameter(rdma_conn_param);
 
+/// The RDMA port space.
 pub enum PortSpace {
     /// Provides for any InfiniBand services (UD, UC, RC, XRC, etc.).
     InfiniBand = rdma_port_space::RDMA_PS_IB as isize,
@@ -426,6 +602,8 @@ impl EventChannel {
         })
     }
 
+    /// Create a new [`Identifier`] for the event channel, all later events associated with this
+    /// [`Identifier`] would be delivered to the event channel.
     pub fn create_id(&mut self, port_space: PortSpace) -> Result<Arc<Identifier>, CreateIdentifierError> {
         let mut cm_id_ptr: *mut rdma_cm_id = null_mut();
         let ret = unsafe { rdma_create_id(self.channel.as_mut(), &mut cm_id_ptr, null_mut(), port_space as u32) };
@@ -437,6 +615,9 @@ impl EventChannel {
         Ok(new_cm_id_for_raw(cm_id_ptr))
     }
 
+    /// Get a new [`Event`] from the event channel, if the event channel is blocking mode, this
+    /// method would block until a new event is available, otherwise, this method would return an
+    /// error if no new event is available.
     pub fn get_cm_event(&mut self) -> Result<Event, GetEventError> {
         let mut event_ptr = MaybeUninit::<*mut rdma_cm_event>::uninit();
 
@@ -484,6 +665,29 @@ impl EventChannel {
             listener_id,
         })
     }
+
+    /// Set the nonblocking mode of event channel's underlying file descriptor to on (true) or off
+    /// (false).
+    pub fn set_nonblocking(&self, nonblocking: bool) -> io::Result<()> {
+        // from libstd/sys/unix/fd.rs
+        let fd = self.as_raw_fd();
+
+        unsafe {
+            let previous = libc::fcntl(fd, libc::F_GETFL);
+            if previous < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            let new = if nonblocking {
+                previous | libc::O_NONBLOCK
+            } else {
+                previous & !libc::O_NONBLOCK
+            };
+            if libc::fcntl(fd, libc::F_SETFL, new) < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(())
+        }
+    }
 }
 
 impl AsRawFd for EventChannel {
@@ -511,23 +715,43 @@ unsafe impl Sync for Identifier {}
 unsafe impl Send for Identifier {}
 
 impl Identifier {
+    /// Setup the user context for the [`Identifier`], so that you can get it back later. As
+    /// [`Identifier`] is thread-safe, so the context should be thread-safe too.
     pub fn setup_context<C: Any + Send + Sync>(&self, ctx: C) {
         let mut user_data = self.user_context.lock().unwrap();
         *user_data = Some(Arc::new(ctx));
     }
 
+    /// Get the user context setting up by [`setup_context`].
+    ///
+    /// [`setup_context`]: crate::rdmacm::communication_manager::Identifier::setup_context
+    ///
     pub fn get_context<C: Any + Send + Sync>(&self) -> Option<Arc<C>> {
         let user_data = self.user_context.lock().unwrap();
         let arc_any = user_data.as_ref()?.clone();
         arc_any.downcast::<C>().ok()
     }
 
+    /// Get the RDMA device's port number of the [`Identifier`]. The port number is only available
+    /// after the [`Identifier`] is bound to a specific address by [`bind_addr`] or [`resolve_addr`].
+    ///
+    /// [`bind_addr`]: crate::rdmacm::communication_manager::Identifier::bind_addr
+    /// [`resolve_addr`]: crate::rdmacm::communication_manager::Identifier::resolve_addr
+    ///
     pub fn port(&self) -> u8 {
         let cm_id = self.cm_id;
 
         unsafe { cm_id.as_ref().port_num }
     }
 
+    /// Bind the [`Identifier`] to a specific address. Note that users shouldn't bind to a loopback
+    /// address like `127.0.0.1`, or the connection would fail.
+    ///
+    /// The address could be `0.0.0.0` or `::`, then the specific RDMA device would be chosen on
+    /// [`resolve_addr`] or receiving a connection request.
+    ///
+    /// [`resolve_addr`]: crate::rdmacm::communication_manager::Identifier::resolve_addr
+    ///
     pub fn bind_addr(&self, addr: SocketAddr) -> Result<(), BindAddressError> {
         let cm_id = self.cm_id;
         let ret = unsafe { rdma_bind_addr(cm_id.as_ptr(), OsSocketAddr::from(addr).as_mut_ptr()) };
@@ -542,6 +766,21 @@ impl Identifier {
         Ok(())
     }
 
+    /// Resolve the address of the [`Identifier`]. Map a given destination IP address to a usable
+    /// RDMA address. The mapping is done by using the local routing table, or via ARP. If a
+    /// source address is provided, the [`Identifier`] would be bound to the address, just as if
+    /// [`bind_addr`] is called. If no source address is provided, the [`Identifier`] would be
+    /// bound to a source address based on the local routing table.
+    ///
+    /// After this call (user received [`EventType::AddressResolved`] event), the [`Identifier`]
+    /// would be bound to an RDMA device.
+    ///
+    /// This call is typically used for the client side before [`resolve_route`] and [`connect`].
+    ///
+    /// [`bind_addr`]: crate::rdmacm::communication_manager::Identifier::bind_addr
+    /// [`resolve_route`]: crate::rdmacm::communication_manager::Identifier::resolve_route
+    /// [`connect`]: crate::rdmacm::communication_manager::Identifier::connect
+    ///
     pub fn resolve_addr(
         &self, src_addr: Option<SocketAddr>, dst_addr: SocketAddr, timeout: Duration,
     ) -> Result<(), ResolveAddressError> {
@@ -571,6 +810,14 @@ impl Identifier {
         Ok(())
     }
 
+    /// Resolve an RDMA route to the destination address of the [`Identifier`]. The destination
+    /// must have already been resolved by [`resolve_addr`].
+    ///
+    /// This call is typically used for the client side before [`connect`].
+    ///
+    /// [`resolve_addr`]: crate::rdmacm::communication_manager::Identifier::resolve_addr
+    /// [`connect`]: crate::rdmacm::communication_manager::Identifier::connect
+    ///
     pub fn resolve_route(&self, timeout: Duration) -> Result<(), ResolveRouteError> {
         let cm_id = self.cm_id;
         let timeout_ms: i32 = timeout.as_millis().try_into().unwrap();
@@ -584,6 +831,12 @@ impl Identifier {
         Ok(())
     }
 
+    /// Listen for incoming connections on the [`Identifier`]. The listen will be restricted to the
+    /// address bound by [`bind_addr`]. And `backlog` is the maximum number of connections that can
+    /// be queued.
+    ///
+    /// [`bind_addr`]: crate::rdmacm::communication_manager::Identifier::bind_addr
+    ///
     pub fn listen(&self, backlog: i32) -> Result<(), ListenError> {
         let cm_id = self.cm_id;
         let ret = unsafe { rdma_listen(cm_id.as_ptr(), backlog) };
@@ -595,6 +848,13 @@ impl Identifier {
         Ok(())
     }
 
+    /// Get the [`DeviceContext`] associated with the [`Identifier`]. The [`DeviceContext`] is only
+    /// available after the [`Identifier`] is bound to a specific address by [`bind_addr`] or
+    /// [`resolve_addr`].
+    ///
+    /// [`bind_addr`]: crate::rdmacm::communication_manager::Identifier::bind_addr
+    /// [`resolve_addr`]: crate::rdmacm::communication_manager::Identifier::resolve_addr
+    ///
     pub fn get_device_context(&self) -> Option<Arc<DeviceContext>> {
         let cm_id = self.cm_id;
 
@@ -614,6 +874,12 @@ impl Identifier {
         }
     }
 
+    /// Connect to a remote [`Identifier`]. The destination must have already been resolved by
+    /// [`resolve_addr`] and [`resolve_route`]. The QP must be created before this call.
+    ///
+    /// [`resolve_addr`]: crate::rdmacm::communication_manager::Identifier::resolve_addr
+    /// [`resolve_route`]: crate::rdmacm::communication_manager::Identifier::resolve_route
+    ///
     pub fn connect(&self, mut conn_param: ConnectionParameter) -> Result<(), ConnectError> {
         let cm_id = self.cm_id;
         let ret = unsafe { rdma_connect(cm_id.as_ptr(), &mut conn_param.0) };
@@ -625,6 +891,7 @@ impl Identifier {
         Ok(())
     }
 
+    /// Disconnect the [`Identifier`].
     pub fn disconnect(&self) -> Result<(), DisconnectError> {
         let cm_id = self.cm_id;
         let ret = unsafe { rdma_disconnect(cm_id.as_ptr()) };
@@ -636,6 +903,22 @@ impl Identifier {
         Ok(())
     }
 
+    /// Called from the listening side to accept an incoming connection on the [`Identifier`].
+    ///
+    /// # Note
+    ///
+    /// This method is only useful for [`EventType::ConnectRequest`] events. A new [`Identifier`]
+    /// is automatically created to handle the incoming connection request. This is distinct from
+    /// the listener [`Identifier`]. The new [`Identifier`] could be obtained by [`Event::cm_id`].
+    ///
+    /// To set up an [`ReliableConnection`], you should create a new QP and modify the QP to
+    /// [`QueuePairState::ReadyToSend`], then call [`accept`] to complete the connection
+    /// establishment.
+    ///
+    /// [`ReliableConnection`]: crate::ibverbs::queue_pair::QueuePairType::ReliableConnection
+    /// [`QueuePairState::ReadyToSend`]: crate::ibverbs::queue_pair::QueuePairState::ReadyToSend
+    /// [`accept`]: crate::rdmacm::communication_manager::Identifier::accept
+    ///
     pub fn accept(&self, mut conn_param: ConnectionParameter) -> Result<(), AcceptError> {
         let cm_id = self.cm_id;
 
@@ -648,6 +931,22 @@ impl Identifier {
         Ok(())
     }
 
+    /// Acknowledge an incoming connection response event and complete the connection establishment
+    /// on the [`Identifier`].
+    ///
+    /// # Note
+    ///
+    /// This method is only useful for [`EventType::ConnectResponse`] events. The remote side
+    /// accepts the connection request and sends a connection response to the active side. To
+    /// complete an [`ReliableConnection`] establishment, you should modify the QP you speficied
+    /// in [`connect`] to [`QueuePairState::ReadyToSend`], then call [`establish`] after receiving
+    /// the connection response event.
+    ///
+    /// [`ReliableConnection`]: crate::ibverbs::queue_pair::QueuePairType::ReliableConnection
+    /// [`connect`]: crate::rdmacm::communication_manager::Identifier::connect
+    /// [`QueuePairState::ReadyToSend`]: crate::ibverbs::queue_pair::QueuePairState::ReadyToSend
+    /// [`establish`]: crate::rdmacm::communication_manager::Identifier::establish
+    ///
     pub fn establish(&self) -> Result<(), EstablishError> {
         let cm_id = self.cm_id;
         let ret = unsafe { rdma_establish(cm_id.as_ptr()) };
@@ -659,6 +958,7 @@ impl Identifier {
         Ok(())
     }
 
+    /// Get the [`QueuePairAttribute`] of the [`Identifier`].
     pub fn get_qp_attr(&self, state: QueuePairState) -> Result<QueuePairAttribute, GetQueuePairAttributeError> {
         let cm_id = self.cm_id;
         let mut attr = MaybeUninit::<ibv_qp_attr>::uninit();
@@ -707,6 +1007,13 @@ impl ConnectionParameter {
         })
     }
 
+    /// Setup the QP number of the [`Identifier`]. You should fill in this field when you are
+    /// setting up an [`ReliableConnection`] in [`connect`] and [`accept`].
+    ///
+    /// [`ReliableConnection`]: crate::ibverbs::queue_pair::QueuePairType::ReliableConnection
+    /// [`connect`]: crate::rdmacm::communication_manager::Identifier::connect
+    /// [`accept`]: crate::rdmacm::communication_manager::Identifier::accept
+    ///
     pub fn setup_qp_number(&mut self, qp_number: u32) -> &mut Self {
         self.0.qp_num = qp_number;
         self
@@ -765,17 +1072,7 @@ mod tests {
 
                 assert_eq!(Arc::strong_count(&id), 1);
 
-                unsafe {
-                    let fd = channel.as_raw_fd();
-                    let previous = libc::fcntl(fd, libc::F_GETFL);
-                    if previous < 0 {
-                        return Err(io::Error::last_os_error().into());
-                    }
-                    let new = previous | libc::O_NONBLOCK;
-                    if libc::fcntl(fd, libc::F_SETFL, new) < 0 {
-                        return Err(io::Error::last_os_error().into());
-                    }
-                }
+                channel.set_nonblocking(true).unwrap();
 
                 let dispatcher = thread::spawn(move || {
                     let poller = Poller::new().expect("Failed to create poller");
