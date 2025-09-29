@@ -1,5 +1,6 @@
 //! Contains all you need for handling Work Completions.
 use std::num::NonZeroU32;
+use std::os::fd::{AsRawFd, RawFd};
 use std::os::raw::c_void;
 use std::ptr::NonNull;
 use std::{io, ptr};
@@ -231,6 +232,35 @@ impl<'res> CompletionChannel<'res> {
                 _phantom: PhantomData,
             })
         }
+    }
+
+    /// Set the nonblocking mode of completion channel's underlying file descriptor to on (true) or
+    /// off (false).
+    pub fn set_nonblocking(&self, nonblocking: bool) -> io::Result<()> {
+        // from libstd/sys/unix/fd.rs
+        let fd = self.as_raw_fd();
+
+        unsafe {
+            let previous = libc::fcntl(fd, libc::F_GETFL);
+            if previous < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            let new = if nonblocking {
+                previous | libc::O_NONBLOCK
+            } else {
+                previous & !libc::O_NONBLOCK
+            };
+            if libc::fcntl(fd, libc::F_SETFL, new) < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(())
+        }
+    }
+}
+
+impl AsRawFd for CompletionChannel<'_> {
+    fn as_raw_fd(&self) -> RawFd {
+        unsafe { self.channel.as_ref().fd }
     }
 }
 
