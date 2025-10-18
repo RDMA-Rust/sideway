@@ -90,9 +90,7 @@
 //! #[self_referencing]
 //! struct EndpointResources {
 //!     ctx: Arc<DeviceContext>,
-//!     #[borrows(ctx)]
-//!     #[covariant]
-//!     pd: ProtectionDomain<'this>,
+//!     pd: Arc<ProtectionDomain>,
 //!     #[borrows(ctx)]
 //!     #[covariant]
 //!     cq: ExtendedCompletionQueue<'this>,
@@ -120,13 +118,11 @@
 //!             },
 //!             EventType::RouteResolved => {
 //!                 let ctx = id.get_device_context().unwrap();
+//!                 let pd = ctx.alloc_pd().unwrap();
 //!                 resources.get_or_insert_with(|| {
 //!                     EndpointResources::new(
 //!                         ctx,
-//!                         |ctx| {
-//!                             let pd = ctx.alloc_pd().unwrap();
-//!                             pd
-//!                         },
+//!                         pd,
 //!                         |ctx| {
 //!                             let cq = ctx
 //!                                 .create_cq_builder()

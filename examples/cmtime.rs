@@ -174,7 +174,7 @@ fn cma_handler(
             let cm_id = event.cm_id().clone().unwrap();
             OPEN_VERBS.call_once(|| unsafe {
                 CTX = Some(cm_id.get_device_context().unwrap().clone());
-                PD = Some(Arc::new(CTX.as_ref().unwrap().alloc_pd().unwrap()));
+                PD = Some(CTX.as_ref().unwrap().alloc_pd().unwrap());
                 CQ = Some(Arc::new(
                     CTX.as_ref()
                         .unwrap()
@@ -352,7 +352,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 if let Some(ref id) = guard.id {
                     OPEN_VERBS.call_once(|| unsafe {
                         CTX = Some(id.get_device_context().unwrap().clone());
-                        PD = Some(Arc::new(CTX.as_ref().unwrap().alloc_pd().unwrap()));
+                        PD = Some(CTX.as_ref().unwrap().alloc_pd().unwrap());
                         CQ = Some(Arc::new(
                             CTX.as_ref()
                                 .unwrap()

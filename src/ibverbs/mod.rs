@@ -24,7 +24,7 @@ use rdma_mummy_sys::ibv_access_flags;
 /// let device_list = DeviceList::new().unwrap();
 /// let device = device_list.get(0).unwrap();
 /// let context = device.open().unwrap();
-/// let mut pd = context.alloc_pd().unwrap();
+/// let pd = context.alloc_pd().unwrap();
 /// let mut qp = pd.create_qp_builder().build().unwrap();
 ///
 /// let data: [u8; 8] = [8; 8];
