@@ -6,8 +6,8 @@
 //! Key Features and Differences from rc_pingpong.rs:
 //! 1. Split Architecture: Implements a separation of functions and context, mirroring the
 //!    original C implementation more closely.
-//! 2. Self-Referential Structure: Utilizes a self-referential struct `PingPongContext`
-//!    implemented using the `ouroboros` crate, which is not present in rc_pingpong.rs.
+//! 2. Arc-Managed Resources: Wraps verbs resources (`DeviceContext`, `ProtectionDomain`,
+//!    `MemoryRegion`) in `Arc` to simplify ownership compared to rc_pingpong.rs.
 //! 3. Modular Design: Breaks down functionality into smaller, more manageable functions,
 //!    improving code readability and maintainability.
 //! 4. Context Encapsulation: Encapsulates more state within the `PingPongContext` struct,
@@ -23,9 +23,9 @@
 #![allow(clippy::too_many_arguments)]
 
 use std::io::{Error, Read, Write};
-use std::mem::ManuallyDrop;
 use std::net::{IpAddr, Ipv6Addr, SocketAddr, TcpListener, TcpStream};
 use std::str::FromStr;
+use std::sync::Arc;
 
 use clap::{Parser, ValueEnum};
 use ouroboros::self_referencing;
@@ -115,34 +115,25 @@ impl ValueEnum for PathMtu {
 
 #[self_referencing]
 struct PingPongContext {
-    ctx: DeviceContext,
-    #[borrows(ctx)]
-    #[covariant]
-    pd: ProtectionDomain<'this>,
+    ctx: Arc<DeviceContext>,
+    pd: Arc<ProtectionDomain>,
+    send_buf: Arc<Vec<u8>>,
+    send_mr: Arc<MemoryRegion>,
+    recv_buf: Arc<Vec<u8>>,
+    recv_mr: Arc<MemoryRegion>,
     #[borrows(ctx)]
     #[covariant]
     cq: ExtendedCompletionQueue<'this>,
     #[borrows(pd, cq)]
     #[covariant]
     qp: ExtendedQueuePair<'this>,
-    #[borrows(pd)]
-    #[covariant]
-    send_mr: MemoryRegion<'this>,
-    #[borrows(pd)]
-    #[covariant]
-    recv_mr: MemoryRegion<'this>,
     size: u32,
-    rx_depth: u32,
     completion_timestamp_mask: u64,
-    outstanding_send: bool,
-    scnt: u32,
-    rcnt: u32,
-    rout: u32,
 }
 
 impl PingPongContext {
     fn build(device: &Device, size: u32, rx_depth: u32, ib_port: u8, use_ts: bool) -> anyhow::Result<PingPongContext> {
-        let context = device
+        let context: Arc<DeviceContext> = device
             .open()
             .unwrap_or_else(|_| panic!("Couldn't get context for {}", device.name()));
 
@@ -157,10 +148,36 @@ impl PingPongContext {
             0
         };
 
+        let pd = context.alloc_pd().unwrap_or_else(|_| panic!("Couldn't allocate PD"));
+
+        let send_buf = Arc::new(vec![0; size as usize]);
+        let send_mr = unsafe {
+            pd.reg_mr(
+                send_buf.as_ptr() as usize,
+                send_buf.len(),
+                AccessFlags::LocalWrite | AccessFlags::RemoteWrite,
+            )
+            .unwrap_or_else(|_| panic!("Couldn't register send MR"))
+        };
+
+        let recv_buf = Arc::new(vec![0; size as usize]);
+        let recv_mr = unsafe {
+            pd.reg_mr(
+                recv_buf.as_ptr() as usize,
+                recv_buf.len(),
+                AccessFlags::LocalWrite | AccessFlags::RemoteWrite,
+            )
+            .unwrap_or_else(|_| panic!("Couldn't register recv MR"))
+        };
+
         Ok(PingPongContext::new(
             context,
-            |context| context.alloc_pd().unwrap_or_else(|_| panic!("Couldn't allocate PD")),
-            |context| {
+            pd,
+            send_buf,
+            send_mr,
+            recv_buf,
+            recv_mr,
+            |context: &Arc<DeviceContext>| {
                 let mut cq_builder = context.create_cq_builder();
                 if use_ts {
                     cq_builder.setup_wc_flags(
@@ -168,10 +185,9 @@ impl PingPongContext {
                             | CreateCompletionQueueWorkCompletionFlags::CompletionTimestamp,
                     );
                 }
-                let cq = cq_builder.setup_cqe(rx_depth + 1).build_ex().unwrap();
-                cq
+                cq_builder.setup_cqe(rx_depth + 1).build_ex().unwrap()
             },
-            |pd, cq| {
+            |pd: &Arc<ProtectionDomain>, cq| {
                 let mut builder = pd.create_qp_builder();
 
                 let mut qp = builder
@@ -192,38 +208,8 @@ impl PingPongContext {
 
                 qp
             },
-            |pd| {
-                let send_data: ManuallyDrop<Vec<u8>> = ManuallyDrop::new(vec![0; size as _]);
-                let send_mr = unsafe {
-                    pd.reg_mr(
-                        send_data.as_ptr() as _,
-                        send_data.len(),
-                        AccessFlags::LocalWrite | AccessFlags::RemoteWrite,
-                    )
-                    .unwrap_or_else(|_| panic!("Couldn't register send MR"))
-                };
-
-                send_mr
-            },
-            |pd| {
-                let recv_data: ManuallyDrop<Vec<u8>> = ManuallyDrop::new(vec![0; size as _]);
-                let recv_mr = unsafe {
-                    pd.reg_mr(
-                        recv_data.as_ptr() as _,
-                        recv_data.len(),
-                        AccessFlags::LocalWrite | AccessFlags::RemoteWrite,
-                    )
-                    .unwrap_or_else(|_| panic!("Couldn't register recv MR"))
-                };
-                recv_mr
-            },
             size,
-            rx_depth,
             completion_timestamp_mask,
-            false,
-            0,
-            0,
-            0,
         ))
     }
 

@@ -1,5 +1,6 @@
 //! The device is used for creating a device context, everything about RDMA starts here.
 use std::ops::Index;
+use std::sync::Arc;
 use std::{ffi::CStr, io, marker::PhantomData};
 
 use rdma_mummy_sys::{
@@ -210,13 +211,13 @@ impl Device<'_> {
 
     /// Open the device to create a [`DeviceContext`] for querying / creating all other RDMA
     /// resources later.
-    pub fn open(&self) -> Result<DeviceContext, OpenDeviceError> {
+    pub fn open(&self) -> Result<Arc<DeviceContext>, OpenDeviceError> {
         unsafe {
             let context = ibv_open_device(self.device);
             if context.is_null() {
                 return Err(OpenDeviceErrorKind::Ibverbs(io::Error::last_os_error()).into());
             }
-            Ok(DeviceContext { context })
+            Ok(Arc::new(DeviceContext { context }))
         }
     }
 }

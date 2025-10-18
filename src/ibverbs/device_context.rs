@@ -6,6 +6,7 @@ use std::fs;
 use std::io;
 use std::mem::MaybeUninit;
 use std::ptr::{self, NonNull};
+use std::sync::Arc;
 
 use rdma_mummy_sys::{
     ibv_alloc_pd, ibv_close_device, ibv_context, ibv_device_attr_ex, ibv_get_device_guid, ibv_get_device_name,
@@ -130,6 +131,7 @@ impl fmt::Display for Guid {
 }
 
 /// A context of the RDMA device, could be used to query its resources or creating PD or CQ.
+#[derive(Debug)]
 pub struct DeviceContext {
     pub(crate) context: *mut ibv_context,
 }
@@ -476,20 +478,20 @@ impl Drop for DeviceContext {
 
 impl DeviceContext {
     /// Allocate a protection domain.
-    pub fn alloc_pd(&self) -> Result<ProtectionDomain<'_>, AllocateProtectionDomainError> {
+    pub fn alloc_pd(self: &Arc<Self>) -> Result<Arc<ProtectionDomain>, AllocateProtectionDomainError> {
         let pd = unsafe { ibv_alloc_pd(self.context) };
 
         if pd.is_null() {
             return Err(AllocateProtectionDomainErrorKind::Ibverbs(io::Error::last_os_error()).into());
         }
 
-        Ok(ProtectionDomain::new(self, unsafe {
+        Ok(Arc::new(ProtectionDomain::new(Arc::clone(self), unsafe {
             NonNull::new(pd).unwrap_unchecked()
-        }))
+        })))
     }
 
     /// Create a completion event channel.
-    pub fn create_comp_channel(&self) -> Result<CompletionChannel<'_>, CreateCompletionChannelError> {
+    pub fn create_comp_channel(self: &Arc<Self>) -> Result<CompletionChannel<'_>, CreateCompletionChannelError> {
         CompletionChannel::new(self)
     }
 
@@ -498,7 +500,7 @@ impl DeviceContext {
     /// [`BasicCompletionQueue`]: crate::ibverbs::completion::BasicCompletionQueue
     /// [`ExtendedCompletionQueue`]: crate::ibverbs::completion::ExtendedCompletionQueue
     ///
-    pub fn create_cq_builder(&self) -> CompletionQueueBuilder<'_> {
+    pub fn create_cq_builder(self: &Arc<Self>) -> CompletionQueueBuilder<'_> {
         CompletionQueueBuilder::new(self)
     }
 
@@ -654,7 +656,7 @@ impl DeviceContext {
     pub fn query_gid_table(&self) -> Result<Vec<GidEntry>, QueryGidTableError> {
         let dev_attr = self.query_device().map_err(QueryGidTableErrorKind::QueryDevice)?;
 
-        let valid_size;
+        let valid_size: isize;
 
         // According to the man page, the gid table entries array should be able
         // to contain all the valid GID. Thus we need to accmulate the gid table
