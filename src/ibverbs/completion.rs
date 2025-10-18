@@ -3,6 +3,7 @@ use std::num::NonZeroU32;
 use std::os::fd::{AsRawFd, RawFd};
 use std::os::raw::c_void;
 use std::ptr::NonNull;
+use std::sync::Arc;
 use std::{io, ptr};
 use std::{marker::PhantomData, mem::MaybeUninit};
 
@@ -204,33 +205,29 @@ pub enum CreateCompletionQueueWorkCompletionFlags {
 /// to userspace process. When a Work Completion event is generated for a [`CompletionQueue`], the
 /// event is delivered via the completion channel attached to that CQ. This could be used for event
 /// notification based poll instead of busy polling (of course, the latency would be higher).
-#[derive(Debug)]
-pub struct CompletionChannel<'res> {
+#[derive(Debug, Clone)]
+pub struct CompletionChannel {
     pub(crate) channel: NonNull<ibv_comp_channel>,
-    // phantom data for device context
-    _phantom: PhantomData<&'res ()>,
+    _dev_ctx: Arc<DeviceContext>,
 }
 
-impl Drop for CompletionChannel<'_> {
+impl Drop for CompletionChannel {
     fn drop(&mut self) {
         let ret = unsafe { ibv_destroy_comp_channel(self.channel.as_ptr()) };
         assert_eq!(ret, 0);
     }
 }
 
-impl<'res> CompletionChannel<'res> {
-    pub fn new<'ctx>(dev_ctx: &'ctx DeviceContext) -> Result<CompletionChannel<'res>, CreateCompletionChannelError>
-    where
-        'ctx: 'res,
-    {
+impl CompletionChannel {
+    pub fn new(dev_ctx: &Arc<DeviceContext>) -> Result<Arc<CompletionChannel>, CreateCompletionChannelError> {
         let comp_channel = unsafe { ibv_create_comp_channel(dev_ctx.context) };
         if comp_channel.is_null() {
             Err(CreateCompletionChannelErrorKind::Ibverbs(io::Error::last_os_error()).into())
         } else {
-            Ok(CompletionChannel {
+            Ok(Arc::new(CompletionChannel {
                 channel: unsafe { NonNull::new_unchecked(comp_channel) },
-                _phantom: PhantomData,
-            })
+                _dev_ctx: Arc::clone(dev_ctx),
+            }))
         }
     }
 
@@ -258,11 +255,14 @@ impl<'res> CompletionChannel<'res> {
     }
 }
 
-impl AsRawFd for CompletionChannel<'_> {
+impl AsRawFd for CompletionChannel {
     fn as_raw_fd(&self) -> RawFd {
         unsafe { self.channel.as_ref().fd }
     }
 }
+
+unsafe impl Send for CompletionChannel {}
+unsafe impl Sync for CompletionChannel {}
 
 /// Unified interface for operations over RDMA CQs.
 pub trait CompletionQueue {
@@ -282,30 +282,30 @@ pub trait CompletionQueue {
 /// [`ibv_start_poll`]: https://man7.org/linux/man-pages/man3/ibv_create_cq_ex.3.html
 ///
 #[derive(Debug)]
-pub struct BasicCompletionQueue<'res> {
+pub struct BasicCompletionQueue {
     pub(crate) cq: NonNull<ibv_cq>,
     poll_batch: NonZeroU32,
-    // phantom data for dev_ctx & comp_channel
-    _phantom: PhantomData<&'res ()>,
+    _dev_ctx: Arc<DeviceContext>,
+    _comp_channel: Option<Arc<CompletionChannel>>,
 }
 
-unsafe impl Send for BasicCompletionQueue<'_> {}
-unsafe impl Sync for BasicCompletionQueue<'_> {}
+unsafe impl Send for BasicCompletionQueue {}
+unsafe impl Sync for BasicCompletionQueue {}
 
-impl Drop for BasicCompletionQueue<'_> {
+impl Drop for BasicCompletionQueue {
     fn drop(&mut self) {
         let ret = unsafe { ibv_destroy_cq(self.cq.as_ptr()) };
         assert_eq!(ret, 0);
     }
 }
 
-impl CompletionQueue for BasicCompletionQueue<'_> {
+impl CompletionQueue for BasicCompletionQueue {
     unsafe fn cq(&self) -> NonNull<ibv_cq> {
         self.cq
     }
 }
 
-impl BasicCompletionQueue<'_> {
+impl BasicCompletionQueue {
     /// Starts to poll Work Completions over this CQ, every [`BasicCompletionQueue`] should hold only
     /// one [`BasicPoller`] at the same time.
     ///
@@ -365,16 +365,16 @@ impl BasicCompletionQueue<'_> {
 /// [`ibv_start_poll`]: https://man7.org/linux/man-pages/man3/ibv_create_cq_ex.3.html
 ///
 #[derive(Debug)]
-pub struct ExtendedCompletionQueue<'res> {
+pub struct ExtendedCompletionQueue {
     pub(crate) cq_ex: NonNull<ibv_cq_ex>,
-    // phantom data for dev_ctx & comp_channel
-    _phantom: PhantomData<&'res ()>,
+    _dev_ctx: Arc<DeviceContext>,
+    _comp_channel: Option<Arc<CompletionChannel>>,
 }
 
-unsafe impl Send for ExtendedCompletionQueue<'_> {}
-unsafe impl Sync for ExtendedCompletionQueue<'_> {}
+unsafe impl Send for ExtendedCompletionQueue {}
+unsafe impl Sync for ExtendedCompletionQueue {}
 
-impl Drop for ExtendedCompletionQueue<'_> {
+impl Drop for ExtendedCompletionQueue {
     fn drop(&mut self) {
         // TODO convert cq_ex to cq (port ibv_cq_ex_to_cq in rdma-mummy-sys)
         let ret = unsafe { ibv_destroy_cq(self.cq_ex.as_ptr().cast()) };
@@ -382,14 +382,14 @@ impl Drop for ExtendedCompletionQueue<'_> {
     }
 }
 
-impl CompletionQueue for ExtendedCompletionQueue<'_> {
+impl CompletionQueue for ExtendedCompletionQueue {
     unsafe fn cq(&self) -> NonNull<ibv_cq> {
         // TODO convert cq_ex to cq (port ibv_cq_ex_to_cq in rdma-mummy-sys)
         self.cq_ex.cast()
     }
 }
 
-impl ExtendedCompletionQueue<'_> {
+impl ExtendedCompletionQueue {
     /// Starts to poll Work Completions over this CQ, every [`ExtendedCompletionQueue`] should hold
     /// only one [`ExtendedPoller`] at the same time.
     pub fn start_poll(&self) -> Result<ExtendedPoller<'_>, PollCompletionQueueError> {
@@ -414,19 +414,17 @@ impl ExtendedCompletionQueue<'_> {
 
 /// A factory for creating [`BasicCompletionQueue`] and [`ExtendedCompletionQueue`] with specified
 /// parameters.
-pub struct CompletionQueueBuilder<'res> {
-    dev_ctx: &'res DeviceContext,
+pub struct CompletionQueueBuilder {
+    dev_ctx: Arc<DeviceContext>,
     init_attr: ibv_cq_init_attr_ex,
+    comp_channel: Option<Arc<CompletionChannel>>,
 }
 
-impl<'res> CompletionQueueBuilder<'res> {
-    pub fn new<'ctx>(dev_ctx: &'ctx DeviceContext) -> Self
-    where
-        'ctx: 'res,
-    {
+impl CompletionQueueBuilder {
+    pub fn new(dev_ctx: &Arc<DeviceContext>) -> Self {
         // set default params for init_attr
         CompletionQueueBuilder {
-            dev_ctx,
+            dev_ctx: Arc::clone(dev_ctx),
             init_attr: ibv_cq_init_attr_ex {
                 cqe: 1024,
                 cq_context: ptr::null_mut::<c_void>(),
@@ -437,6 +435,7 @@ impl<'res> CompletionQueueBuilder<'res> {
                 flags: 0,
                 parent_domain: ptr::null_mut::<ibv_pd>(),
             },
+            comp_channel: None,
         }
     }
 
@@ -455,12 +454,10 @@ impl<'res> CompletionQueueBuilder<'res> {
 
     /// Setup the completion channel to be associated with the CQ, such that when there is new
     /// Work Completions come in, the completion channel would notify user.
-    pub fn setup_comp_channel<'channel>(&mut self, channel: &'channel CompletionChannel, comp_vector: u32) -> &mut Self
-    where
-        'channel: 'res,
-    {
+    pub fn setup_comp_channel(&mut self, channel: &Arc<CompletionChannel>, comp_vector: u32) -> &mut Self {
         self.init_attr.channel = channel.channel.as_ptr();
         self.init_attr.comp_vector = comp_vector;
+        self.comp_channel = Some(Arc::clone(channel));
         self
     }
 
@@ -476,7 +473,7 @@ impl<'res> CompletionQueueBuilder<'res> {
     ///
     /// [`ibv_create_cq_ex`]: https://man7.org/linux/man-pages/man3/ibv_create_cq_ex.3.html
     ///
-    pub fn build_ex(&self) -> Result<ExtendedCompletionQueue<'res>, CreateCompletionQueueError> {
+    pub fn build_ex(&self) -> Result<Arc<ExtendedCompletionQueue>, CreateCompletionQueueError> {
         // create a copy of init_attr since ibv_create_cq_ex requires a mutable pointer to it
         let mut init_attr = self.init_attr;
 
@@ -484,11 +481,11 @@ impl<'res> CompletionQueueBuilder<'res> {
         if cq_ex.is_null() {
             Err(CreateCompletionQueueErrorKind::Ibverbs(io::Error::last_os_error()).into())
         } else {
-            Ok(ExtendedCompletionQueue {
+            Ok(Arc::new(ExtendedCompletionQueue {
                 cq_ex: unsafe { NonNull::new_unchecked(cq_ex) },
-                // associate the lifetime of dev_ctx & comp_channel with CQ
-                _phantom: PhantomData,
-            })
+                _dev_ctx: Arc::clone(&self.dev_ctx),
+                _comp_channel: self.comp_channel.clone(),
+            }))
         }
     }
 
@@ -496,7 +493,7 @@ impl<'res> CompletionQueueBuilder<'res> {
     ///
     /// [`ibv_create_cq`]: https://man7.org/linux/man-pages/man3/ibv_create_cq.3.html
     ///
-    pub fn build(&self) -> Result<BasicCompletionQueue<'res>, CreateCompletionQueueError> {
+    pub fn build(&self) -> Result<Arc<BasicCompletionQueue>, CreateCompletionQueueError> {
         let cq = unsafe {
             ibv_create_cq(
                 self.dev_ctx.context,
@@ -510,12 +507,12 @@ impl<'res> CompletionQueueBuilder<'res> {
         if cq.is_null() {
             Err(CreateCompletionQueueErrorKind::Ibverbs(io::Error::last_os_error()).into())
         } else {
-            Ok(BasicCompletionQueue {
+            Ok(Arc::new(BasicCompletionQueue {
                 cq: unsafe { NonNull::new_unchecked(cq) },
                 poll_batch: unsafe { NonZeroU32::new(32).unwrap_unchecked() },
-                // associate the lifetime of dev_ctx & comp_channel with CQ
-                _phantom: PhantomData,
-            })
+                _dev_ctx: Arc::clone(&self.dev_ctx),
+                _comp_channel: self.comp_channel.clone(),
+            }))
         }
     }
 }
@@ -743,14 +740,23 @@ impl<'cq> Iterator for ExtendedPoller<'cq> {
 /// A unified interface for [`BasicCompletionQueue`] and [`ExtendedCompletionQueue`], implemented
 /// with enum dispatching.
 #[derive(Debug)]
-pub enum GenericCompletionQueue<'cq> {
+pub enum GenericCompletionQueue {
     /// Variant for a Basic CQ
-    Basic(BasicCompletionQueue<'cq>),
+    Basic(Arc<BasicCompletionQueue>),
     /// Variant for an Extended CQ
-    Extended(ExtendedCompletionQueue<'cq>),
+    Extended(Arc<ExtendedCompletionQueue>),
 }
 
-impl CompletionQueue for GenericCompletionQueue<'_> {
+impl Clone for GenericCompletionQueue {
+    fn clone(&self) -> Self {
+        match self {
+            GenericCompletionQueue::Basic(cq) => GenericCompletionQueue::Basic(Arc::clone(cq)),
+            GenericCompletionQueue::Extended(cq) => GenericCompletionQueue::Extended(Arc::clone(cq)),
+        }
+    }
+}
+
+impl CompletionQueue for GenericCompletionQueue {
     unsafe fn cq(&self) -> NonNull<ibv_cq> {
         match self {
             GenericCompletionQueue::Basic(cq) => cq.cq(),
@@ -766,7 +772,7 @@ pub enum GenericPoller<'cq> {
     Extended(ExtendedPoller<'cq>),
 }
 
-impl GenericCompletionQueue<'_> {
+impl GenericCompletionQueue {
     pub fn start_poll(&self) -> Result<GenericPoller<'_>, PollCompletionQueueError> {
         match self {
             GenericCompletionQueue::Basic(cq) => cq.start_poll().map(GenericPoller::Basic),
@@ -847,15 +853,21 @@ impl GenericWorkCompletion<'_> {
     }
 }
 
-impl<'cq> From<BasicCompletionQueue<'cq>> for GenericCompletionQueue<'cq> {
-    fn from(cq: BasicCompletionQueue<'cq>) -> Self {
+impl From<Arc<BasicCompletionQueue>> for GenericCompletionQueue {
+    fn from(cq: Arc<BasicCompletionQueue>) -> Self {
         GenericCompletionQueue::Basic(cq)
     }
 }
 
-impl<'cq> From<ExtendedCompletionQueue<'cq>> for GenericCompletionQueue<'cq> {
-    fn from(cq: ExtendedCompletionQueue<'cq>) -> Self {
+impl From<Arc<ExtendedCompletionQueue>> for GenericCompletionQueue {
+    fn from(cq: Arc<ExtendedCompletionQueue>) -> Self {
         GenericCompletionQueue::Extended(cq)
+    }
+}
+
+impl From<Arc<GenericCompletionQueue>> for GenericCompletionQueue {
+    fn from(cq: Arc<GenericCompletionQueue>) -> Self {
+        cq.as_ref().clone()
     }
 }
 

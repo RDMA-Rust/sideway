@@ -9,8 +9,9 @@ use rdma_mummy_sys::{
     ibv_wr_rdma_read, ibv_wr_rdma_write, ibv_wr_rdma_write_imm, ibv_wr_send, ibv_wr_send_imm, ibv_wr_set_inline_data,
     ibv_wr_set_inline_data_list, ibv_wr_set_sge, ibv_wr_set_sge_list, ibv_wr_start,
 };
-use std::sync::LazyLock;
+use std::sync::{Arc, LazyLock};
 use std::{
+    fmt,
     io::{self, IoSlice},
     marker::PhantomData,
     mem::MaybeUninit,
@@ -19,7 +20,7 @@ use std::{
 
 use super::{
     address::{AddressHandleAttribute, Gid},
-    completion::CompletionQueue,
+    completion::{CompletionQueue, GenericCompletionQueue},
     device_context::Mtu,
     protection_domain::ProtectionDomain,
     AccessFlags,
@@ -623,24 +624,24 @@ static RC_QP_STATE_TABLE: LazyLock<
 /// [`ibv_create_qp`]: https://man7.org/linux/man-pages/man3/ibv_create_qp.3.html
 /// [`ibv_wr_*`]: https://manpages.debian.org/testing/libibverbs-dev/ibv_wr_post.3.en.html
 ///
-#[derive(Debug)]
-pub struct BasicQueuePair<'res> {
+pub struct BasicQueuePair {
     pub(crate) qp: NonNull<ibv_qp>,
-    // phantom data for protection domain & completion queues
-    pub(crate) _phantom: PhantomData<&'res ()>,
+    _pd: Arc<ProtectionDomain>,
+    _send_cq: GenericCompletionQueue,
+    _recv_cq: GenericCompletionQueue,
 }
 
-unsafe impl Send for BasicQueuePair<'_> {}
-unsafe impl Sync for BasicQueuePair<'_> {}
+unsafe impl Send for BasicQueuePair {}
+unsafe impl Sync for BasicQueuePair {}
 
-impl Drop for BasicQueuePair<'_> {
+impl Drop for BasicQueuePair {
     fn drop(&mut self) {
         let ret = unsafe { ibv_destroy_qp(self.qp.as_ptr()) };
         assert_eq!(ret, 0);
     }
 }
 
-impl QueuePair for BasicQueuePair<'_> {
+impl QueuePair for BasicQueuePair {
     unsafe fn qp(&self) -> NonNull<ibv_qp> {
         self.qp
     }
@@ -660,6 +661,12 @@ impl QueuePair for BasicQueuePair<'_> {
     }
 }
 
+impl fmt::Debug for BasicQueuePair {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("BasicQueuePair").field("qp", &self.qp).finish()
+    }
+}
+
 /// The extended [`QueuePair`] created with [`QueuePairBuilder::build_ex`] ([`ibv_create_qp_ex`]),
 /// which support some advanced features (including [`ibv_wr_*`] APIs), should provide better
 /// performance compared to [`BasicQueuePair`].
@@ -667,24 +674,24 @@ impl QueuePair for BasicQueuePair<'_> {
 /// [`ibv_create_qp_ex`]: https://man7.org/linux/man-pages/man3/ibv_create_qp_ex.3.html
 /// [`ibv_wr_*`]: https://manpages.debian.org/testing/libibverbs-dev/ibv_wr_post.3.en.html
 ///
-#[derive(Debug)]
-pub struct ExtendedQueuePair<'res> {
+pub struct ExtendedQueuePair {
     pub(crate) qp_ex: NonNull<ibv_qp_ex>,
-    // phantom data for protection domain & completion queues
-    _phantom: PhantomData<&'res ()>,
+    _pd: Arc<ProtectionDomain>,
+    _send_cq: GenericCompletionQueue,
+    _recv_cq: GenericCompletionQueue,
 }
 
-unsafe impl Send for ExtendedQueuePair<'_> {}
-unsafe impl Sync for ExtendedQueuePair<'_> {}
+unsafe impl Send for ExtendedQueuePair {}
+unsafe impl Sync for ExtendedQueuePair {}
 
-impl Drop for ExtendedQueuePair<'_> {
+impl Drop for ExtendedQueuePair {
     fn drop(&mut self) {
         let ret = unsafe { ibv_destroy_qp(self.qp().as_ptr()) };
         assert_eq!(ret, 0)
     }
 }
 
-impl QueuePair for ExtendedQueuePair<'_> {
+impl QueuePair for ExtendedQueuePair {
     unsafe fn qp(&self) -> NonNull<ibv_qp> {
         NonNull::new_unchecked(&mut (*self.qp_ex.as_ptr()).qp_base as _)
     }
@@ -705,19 +712,23 @@ impl QueuePair for ExtendedQueuePair<'_> {
     }
 }
 
-/// A factory for creating [`BasicQueuePair`] and [`ExtendedQueuePair`] with the specified
-/// parameters.
-pub struct QueuePairBuilder<'res> {
-    init_attr: ibv_qp_init_attr_ex,
-    // phantom data for protection domain & completion queues
-    _phantom: PhantomData<&'res ()>,
+impl fmt::Debug for ExtendedQueuePair {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ExtendedQueuePair").field("qp_ex", &self.qp_ex).finish()
+    }
 }
 
-impl<'res> QueuePairBuilder<'res> {
-    pub fn new<'pd>(pd: &'pd ProtectionDomain) -> QueuePairBuilder<'res>
-    where
-        'pd: 'res,
-    {
+/// A factory for creating [`BasicQueuePair`] and [`ExtendedQueuePair`] with the specified
+/// parameters.
+pub struct QueuePairBuilder {
+    init_attr: ibv_qp_init_attr_ex,
+    pd: Arc<ProtectionDomain>,
+    send_cq: Option<GenericCompletionQueue>,
+    recv_cq: Option<GenericCompletionQueue>,
+}
+
+impl QueuePairBuilder {
+    pub fn new(pd: &Arc<ProtectionDomain>) -> QueuePairBuilder {
         QueuePairBuilder {
             init_attr: ibv_qp_init_attr_ex {
                 qp_context: null_mut(),
@@ -753,7 +764,9 @@ impl<'res> QueuePairBuilder<'res> {
                     | SendOperationFlags::Read)
                     .into(),
             },
-            _phantom: PhantomData,
+            pd: Arc::clone(pd),
+            send_cq: None,
+            recv_cq: None,
         }
     }
 
@@ -803,11 +816,15 @@ impl<'res> QueuePairBuilder<'res> {
     ///
     /// [`setup_recv_cq`]: QueuePairBuilder::setup_recv_cq
     ///
-    pub fn setup_send_cq<'sq>(&mut self, send_cq: &'sq impl CompletionQueue) -> &mut Self
+    pub fn setup_send_cq<C>(&mut self, send_cq: C) -> &mut Self
     where
-        'sq: 'res,
+        C: Into<GenericCompletionQueue>,
     {
-        self.init_attr.send_cq = unsafe { send_cq.cq().as_ptr() };
+        let cq = send_cq.into();
+        unsafe {
+            self.init_attr.send_cq = cq.cq().as_ptr();
+        }
+        self.send_cq = Some(cq);
         self
     }
 
@@ -816,11 +833,15 @@ impl<'res> QueuePairBuilder<'res> {
     ///
     /// [`setup_send_cq`]: QueuePairBuilder::setup_send_cq
     ///
-    pub fn setup_recv_cq<'rq>(&mut self, recv_cq: &'rq impl CompletionQueue) -> &mut Self
+    pub fn setup_recv_cq<C>(&mut self, recv_cq: C) -> &mut Self
     where
-        'rq: 'res,
+        C: Into<GenericCompletionQueue>,
     {
-        self.init_attr.recv_cq = unsafe { recv_cq.cq().as_ptr() };
+        let cq = recv_cq.into();
+        unsafe {
+            self.init_attr.recv_cq = cq.cq().as_ptr();
+        }
+        self.recv_cq = Some(cq);
         self
     }
 
@@ -834,7 +855,18 @@ impl<'res> QueuePairBuilder<'res> {
     ///
     /// [`ibv_create_qp`]: https://man7.org/linux/man-pages/man3/ibv_create_qp.3.html
     ///
-    pub fn build(&self) -> Result<BasicQueuePair<'res>, CreateQueuePairError> {
+    pub fn build(&self) -> Result<BasicQueuePair, CreateQueuePairError> {
+        let send_cq = self
+            .send_cq
+            .as_ref()
+            .cloned()
+            .expect("send completion queue must be configured before building a QueuePair");
+        let recv_cq = self
+            .recv_cq
+            .as_ref()
+            .cloned()
+            .expect("receive completion queue must be configured before building a QueuePair");
+
         let qp = unsafe {
             ibv_create_qp(
                 self.init_attr.pd,
@@ -853,7 +885,9 @@ impl<'res> QueuePairBuilder<'res> {
         Ok(BasicQueuePair {
             qp: NonNull::new(qp)
                 .ok_or::<CreateQueuePairError>(CreateQueuePairErrorKind::Ibverbs(io::Error::last_os_error()).into())?,
-            _phantom: PhantomData,
+            _pd: Arc::clone(&self.pd),
+            _send_cq: send_cq,
+            _recv_cq: recv_cq,
         })
     }
 
@@ -861,7 +895,18 @@ impl<'res> QueuePairBuilder<'res> {
     ///
     /// [`ibv_create_qp_ex`]: https://man7.org/linux/man-pages/man3/ibv_create_qp_ex.3.html
     ///
-    pub fn build_ex(&self) -> Result<ExtendedQueuePair<'res>, CreateQueuePairError> {
+    pub fn build_ex(&self) -> Result<ExtendedQueuePair, CreateQueuePairError> {
+        let send_cq = self
+            .send_cq
+            .as_ref()
+            .cloned()
+            .expect("send completion queue must be configured before building a QueuePair");
+        let recv_cq = self
+            .recv_cq
+            .as_ref()
+            .cloned()
+            .expect("receive completion queue must be configured before building a QueuePair");
+
         let mut attr = self.init_attr;
 
         let qp = unsafe { ibv_create_qp_ex((*(attr.pd)).context, &mut attr) };
@@ -869,7 +914,9 @@ impl<'res> QueuePairBuilder<'res> {
         Ok(ExtendedQueuePair {
             qp_ex: NonNull::new(unsafe { ibv_qp_to_qp_ex(qp) })
                 .ok_or::<CreateQueuePairError>(CreateQueuePairErrorKind::Ibverbs(io::Error::last_os_error()).into())?,
-            _phantom: PhantomData,
+            _pd: Arc::clone(&self.pd),
+            _send_cq: send_cq,
+            _recv_cq: recv_cq,
         })
     }
 }
@@ -1684,14 +1731,14 @@ impl SetScatterGatherEntry for RecvWorkRequestHandle<'_, '_> {
 /// A unified interface for [`BasicQueuePair`] and [`ExtendedQueuePair`], implemented with enum
 /// dispatching.
 #[derive(Debug)]
-pub enum GenericQueuePair<'qp> {
+pub enum GenericQueuePair {
     /// Variant for a Basic Queue Pair
-    Basic(BasicQueuePair<'qp>),
+    Basic(BasicQueuePair),
     /// Variant for an Extended Queue Pair
-    Extended(ExtendedQueuePair<'qp>),
+    Extended(ExtendedQueuePair),
 }
 
-impl QueuePair for GenericQueuePair<'_> {
+impl QueuePair for GenericQueuePair {
     unsafe fn qp(&self) -> NonNull<ibv_qp> {
         match self {
             GenericQueuePair::Basic(qp) => qp.qp(),
@@ -1827,7 +1874,7 @@ impl private_traits::PostSendGuard for GenericPostSendGuard<'_> {
     }
 }
 
-impl<'qp> From<BasicQueuePair<'qp>> for GenericQueuePair<'qp> {
+impl From<BasicQueuePair> for GenericQueuePair {
     /// Converts a BasicQueuePair into a GenericQueuePair.
     ///
     /// This allows for easy creation of a GenericQueuePair from a BasicQueuePair.
@@ -1838,12 +1885,12 @@ impl<'qp> From<BasicQueuePair<'qp>> for GenericQueuePair<'qp> {
     /// let basic_qp = builder.build().unwarp();
     /// let generic_qp: GenericQueuePair = basic_qp.into();
     /// ```
-    fn from(qp: BasicQueuePair<'qp>) -> Self {
+    fn from(qp: BasicQueuePair) -> Self {
         GenericQueuePair::Basic(qp)
     }
 }
 
-impl<'qp> From<ExtendedQueuePair<'qp>> for GenericQueuePair<'qp> {
+impl From<ExtendedQueuePair> for GenericQueuePair {
     /// Converts an ExtendedQueuePair into a GenericQueuePair.
     ///
     /// This allows for easy creation of a GenericQueuePair from an ExtendedQueuePair.
@@ -1854,7 +1901,7 @@ impl<'qp> From<ExtendedQueuePair<'qp>> for GenericQueuePair<'qp> {
     /// let extended_qp = builder.build_ex().unwarp();
     /// let generic_qp: GenericQueuePair = extended_qp.into();
     /// ```
-    fn from(qp: ExtendedQueuePair<'qp>) -> Self {
+    fn from(qp: ExtendedQueuePair) -> Self {
         GenericQueuePair::Extended(qp)
     }
 }
@@ -1863,6 +1910,7 @@ impl<'qp> From<ExtendedQueuePair<'qp>> for GenericQueuePair<'qp> {
 mod tests {
     use super::*;
     use crate::ibverbs::address::GidType;
+    use crate::ibverbs::completion::GenericCompletionQueue;
     use crate::ibverbs::device;
 
     #[test]
@@ -1880,9 +1928,13 @@ mod tests {
                         .unwrap()
                 };
 
-                let cq = ctx.create_cq_builder().setup_cqe(2).build_ex()?;
+                let cq = GenericCompletionQueue::from(ctx.create_cq_builder().setup_cqe(2).build_ex()?);
 
-                let mut qp = pd.create_qp_builder().setup_send_cq(&cq).setup_recv_cq(&cq).build()?;
+                let mut qp = pd
+                    .create_qp_builder()
+                    .setup_send_cq(cq.clone())
+                    .setup_recv_cq(cq.clone())
+                    .build()?;
 
                 let mut guard = qp.start_post_recv();
                 unsafe {
@@ -1964,12 +2016,12 @@ mod tests {
                         .unwrap()
                 };
 
-                let cq = ctx.create_cq_builder().setup_cqe(2).build_ex()?;
+                let cq = GenericCompletionQueue::from(ctx.create_cq_builder().setup_cqe(2).build_ex()?);
 
                 let mut qp = pd
                     .create_qp_builder()
-                    .setup_send_cq(&cq)
-                    .setup_recv_cq(&cq)
+                    .setup_send_cq(cq.clone())
+                    .setup_recv_cq(cq.clone())
                     .setup_max_recv_wr(1)
                     .build()?;
 

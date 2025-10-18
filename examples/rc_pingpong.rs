@@ -15,12 +15,15 @@
 use std::io::{Error, Read, Write};
 use std::net::{IpAddr, Ipv6Addr, SocketAddr, TcpListener, TcpStream};
 use std::str::FromStr;
+use std::sync::Arc;
 
 use clap::{Parser, ValueEnum};
 use postcard::{from_bytes, to_allocvec};
 use serde::{Deserialize, Serialize};
 use sideway::ibverbs::address::{AddressHandleAttribute, Gid};
-use sideway::ibverbs::completion::{CreateCompletionQueueWorkCompletionFlags, WorkCompletionStatus};
+use sideway::ibverbs::completion::{
+    CreateCompletionQueueWorkCompletionFlags, GenericCompletionQueue, WorkCompletionStatus,
+};
 use sideway::ibverbs::device::{DeviceInfo, DeviceList};
 use sideway::ibverbs::device_context::Mtu;
 use sideway::ibverbs::queue_pair::{
@@ -188,12 +191,14 @@ fn main() -> anyhow::Result<()> {
 
     let cq = cq_builder.setup_cqe(rx_depth + 1).build_ex().unwrap();
 
+    let cq_handle = GenericCompletionQueue::from(Arc::clone(&cq));
+
     let mut builder = pd.create_qp_builder();
 
     let mut qp = builder
         .setup_max_inline_data(128)
-        .setup_send_cq(&cq)
-        .setup_recv_cq(&cq)
+        .setup_send_cq(cq_handle.clone())
+        .setup_recv_cq(cq_handle)
         .setup_max_send_wr(1)
         .setup_max_recv_wr(rx_depth)
         .build_ex()

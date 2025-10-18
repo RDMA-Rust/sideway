@@ -1,23 +1,23 @@
 error[E0499]: cannot borrow `guard` as mutable more than once at a time
-  --> tests/post_send_guard/one_guard_has_only_one_handle.rs:97:32
-   |
-92 |             let write_handle = guard
-   |                                ----- first mutable borrow occurs here
-...
-97 |             let _send_handle = guard.construct_wr(2, 0.into()).setup_send();
-   |                                ^^^^^ second mutable borrow occurs here
-98 |
-99 |             write_handle.setup_inline_data(&buf);
-   |             ------------ first borrow later used here
-
-error[E0499]: cannot borrow `guard` as mutable more than once at a time
-   --> tests/post_send_guard/one_guard_has_only_one_handle.rs:167:32
+   --> tests/post_send_guard/one_guard_has_only_one_handle.rs:98:32
     |
-162 |             let write_handle = guard
+ 93 |             let write_handle = guard
     |                                ----- first mutable borrow occurs here
 ...
-167 |             let _send_handle = guard.construct_wr(2, 0.into()).setup_send();
+ 98 |             let _send_handle = guard.construct_wr(2, 0.into()).setup_send();
     |                                ^^^^^ second mutable borrow occurs here
-168 |
-169 |             write_handle.setup_inline_data(&buf);
+ 99 |
+100 |             write_handle.setup_inline_data(&buf);
+    |             ------------ first borrow later used here
+
+error[E0499]: cannot borrow `guard` as mutable more than once at a time
+   --> tests/post_send_guard/one_guard_has_only_one_handle.rs:168:32
+    |
+163 |             let write_handle = guard
+    |                                ----- first mutable borrow occurs here
+...
+168 |             let _send_handle = guard.construct_wr(2, 0.into()).setup_send();
+    |                                ^^^^^ second mutable borrow occurs here
+169 |
+170 |             write_handle.setup_inline_data(&buf);
     |             ------------ first borrow later used here

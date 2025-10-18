@@ -56,7 +56,7 @@ impl ProtectionDomain {
 
     /// Create a [`QueuePairBuilder`] for building QPs on this protection domain
     /// later.
-    pub fn create_qp_builder(self: &Arc<Self>) -> QueuePairBuilder<'_> {
-        QueuePairBuilder::new(self.as_ref())
+    pub fn create_qp_builder(self: &Arc<Self>) -> QueuePairBuilder {
+        QueuePairBuilder::new(self)
     }
 }

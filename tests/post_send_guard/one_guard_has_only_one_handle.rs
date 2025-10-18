@@ -5,6 +5,7 @@ use sideway::ibverbs::{
     queue_pair::{PostSendGuard, QueuePair, QueuePairAttribute, QueuePairState, SetInlineData, WorkRequestFlags},
     AccessFlags,
 };
+use sideway::ibverbs::completion::GenericCompletionQueue;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let device_list = device::DeviceList::new()?;
@@ -24,17 +25,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         let _comp_channel = ctx.create_comp_channel().unwrap();
         let mut cq_builder = ctx.create_cq_builder();
-        let sq = cq_builder.setup_cqe(128).build_ex().unwrap();
-        let rq = cq_builder.setup_cqe(128).build_ex().unwrap();
+        let sq = GenericCompletionQueue::from(cq_builder.setup_cqe(128).build_ex().unwrap());
+        let rq = GenericCompletionQueue::from(cq_builder.setup_cqe(128).build_ex().unwrap());
 
         let mut builder = pd.create_qp_builder();
 
         // block for basic qp
         {
-            let mut qp = builder
+        let mut qp = builder
             .setup_max_inline_data(128)
-            .setup_send_cq(&sq)
-            .setup_recv_cq(&rq)
+            .setup_send_cq(sq.clone())
+            .setup_recv_cq(rq.clone())
             .build()
             .unwrap();
 
@@ -101,10 +102,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         // block for extended qp
         {
-            let mut qp = builder
+        let mut qp = builder
             .setup_max_inline_data(128)
-            .setup_send_cq(&sq)
-            .setup_recv_cq(&rq)
+            .setup_send_cq(sq.clone())
+            .setup_recv_cq(rq.clone())
             .build_ex()
             .unwrap();
 

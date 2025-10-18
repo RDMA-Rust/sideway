@@ -14,6 +14,7 @@ use rdma_mummy_sys::ibv_access_flags;
 /// # Example
 ///
 /// ```no_run
+/// use sideway::ibverbs::completion::GenericCompletionQueue;
 /// use sideway::ibverbs::AccessFlags;
 /// use sideway::ibverbs::device::DeviceList;
 /// use sideway::ibverbs::protection_domain::ProtectionDomain;
@@ -25,7 +26,13 @@ use rdma_mummy_sys::ibv_access_flags;
 /// let device = device_list.get(0).unwrap();
 /// let context = device.open().unwrap();
 /// let pd = context.alloc_pd().unwrap();
-/// let mut qp = pd.create_qp_builder().build().unwrap();
+/// let cq = GenericCompletionQueue::from(context.create_cq_builder().setup_cqe(1).build().unwrap());
+/// let mut qp = pd
+///     .create_qp_builder()
+///     .setup_send_cq(cq.clone())
+///     .setup_recv_cq(cq)
+///     .build()
+///     .unwrap();
 ///
 /// let data: [u8; 8] = [8; 8];
 /// // We would use flags for creating MR here

@@ -491,7 +491,7 @@ impl DeviceContext {
     }
 
     /// Create a completion event channel.
-    pub fn create_comp_channel(self: &Arc<Self>) -> Result<CompletionChannel<'_>, CreateCompletionChannelError> {
+    pub fn create_comp_channel(self: &Arc<Self>) -> Result<Arc<CompletionChannel>, CreateCompletionChannelError> {
         CompletionChannel::new(self)
     }
 
@@ -500,7 +500,7 @@ impl DeviceContext {
     /// [`BasicCompletionQueue`]: crate::ibverbs::completion::BasicCompletionQueue
     /// [`ExtendedCompletionQueue`]: crate::ibverbs::completion::ExtendedCompletionQueue
     ///
-    pub fn create_cq_builder(self: &Arc<Self>) -> CompletionQueueBuilder<'_> {
+    pub fn create_cq_builder(self: &Arc<Self>) -> CompletionQueueBuilder {
         CompletionQueueBuilder::new(self)
     }
 

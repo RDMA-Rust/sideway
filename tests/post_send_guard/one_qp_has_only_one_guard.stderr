@@ -1,23 +1,23 @@
 error[E0499]: cannot borrow `qp` as mutable more than once at a time
-  --> tests/post_send_guard/one_qp_has_only_one_guard.rs:92:28
+  --> tests/post_send_guard/one_qp_has_only_one_guard.rs:93:28
    |
-89 |             let guard = qp.start_post_send();
+90 |             let guard = qp.start_post_send();
    |                         -- first mutable borrow occurs here
 ...
-92 |             let _guard_2 = qp.start_post_send();
+93 |             let _guard_2 = qp.start_post_send();
    |                            ^^ second mutable borrow occurs here
-93 |
-94 |             let _res = guard.post().unwrap();
+94 |
+95 |             let _res = guard.post().unwrap();
    |                        ----- first borrow later used here
 
 error[E0499]: cannot borrow `qp` as mutable more than once at a time
-   --> tests/post_send_guard/one_qp_has_only_one_guard.rs:157:28
+   --> tests/post_send_guard/one_qp_has_only_one_guard.rs:158:28
     |
-154 |             let guard = qp.start_post_send();
+155 |             let guard = qp.start_post_send();
     |                         -- first mutable borrow occurs here
 ...
-157 |             let _guard_2 = qp.start_post_send();
+158 |             let _guard_2 = qp.start_post_send();
     |                            ^^ second mutable borrow occurs here
-158 |
-159 |             let _res = guard.post().unwrap();
+159 |
+160 |             let _res = guard.post().unwrap();
     |                        ----- first borrow later used here
