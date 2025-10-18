@@ -51,22 +51,22 @@ fn main(#[case] use_qp_ex: bool, #[case] use_cq_ex: bool) -> Result<(), Box<dyn 
         let _comp_channel = ctx.create_comp_channel().unwrap();
         let mut cq_builder = ctx.create_cq_builder();
         cq_builder.setup_cqe(128);
-        let sq: GenericCompletionQueue = if use_cq_ex {
-            cq_builder.build_ex().unwrap().into()
+        let sq = if use_cq_ex {
+            GenericCompletionQueue::from(cq_builder.build_ex().unwrap())
         } else {
-            cq_builder.build().unwrap().into()
+            GenericCompletionQueue::from(cq_builder.build().unwrap())
         };
-        let rq: GenericCompletionQueue = if use_cq_ex {
-            cq_builder.build_ex().unwrap().into()
+        let rq = if use_cq_ex {
+            GenericCompletionQueue::from(cq_builder.build_ex().unwrap())
         } else {
-            cq_builder.build().unwrap().into()
+            GenericCompletionQueue::from(cq_builder.build().unwrap())
         };
 
         let mut builder = pd.create_qp_builder();
         builder
             .setup_max_inline_data(128)
-            .setup_send_cq(&sq)
-            .setup_recv_cq(&rq)
+            .setup_send_cq(sq.clone())
+            .setup_recv_cq(rq.clone())
             .setup_send_ops_flags(
                 SendOperationFlags::Send
                     | SendOperationFlags::SendWithImmediate

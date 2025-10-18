@@ -60,13 +60,13 @@ pub enum Step {
 
 static mut CTX: Option<Arc<DeviceContext>> = None;
 static mut PD: Option<Arc<ProtectionDomain>> = None;
-static mut CQ: Option<Arc<GenericCompletionQueue>> = None;
+static mut CQ: Option<GenericCompletionQueue> = None;
 
 static OPEN_VERBS: Once = Once::new();
 
-struct Node<'a> {
+struct Node {
     id: Option<Arc<Identifier>>,
-    qp: Option<GenericQueuePair<'a>>,
+    qp: Option<GenericQueuePair>,
     times: [(Instant, Instant); Step::Count as usize],
 }
 
@@ -175,7 +175,7 @@ fn cma_handler(
             OPEN_VERBS.call_once(|| unsafe {
                 CTX = Some(cm_id.get_device_context().unwrap().clone());
                 PD = Some(CTX.as_ref().unwrap().alloc_pd().unwrap());
-                CQ = Some(Arc::new(
+                CQ = Some(
                     CTX.as_ref()
                         .unwrap()
                         .create_cq_builder()
@@ -183,7 +183,7 @@ fn cma_handler(
                         .build_ex()
                         .unwrap()
                         .into(),
-                ));
+                );
             });
             req_wq.unwrap().send(cm_id).unwrap();
         },
@@ -222,7 +222,7 @@ fn cma_handler(
     let _ = event.ack();
 }
 
-impl Node<'_> {
+impl Node {
     fn create_qp(&mut self) {
         unsafe {
             let pd = PD.as_ref().unwrap();
@@ -235,8 +235,8 @@ impl Node<'_> {
                 .setup_max_send_sge(1)
                 .setup_max_recv_wr(1)
                 .setup_max_recv_sge(1)
-                .setup_send_cq(cq.as_ref())
-                .setup_recv_cq(cq.as_ref());
+                .setup_send_cq(cq.clone())
+                .setup_recv_cq(cq.clone());
 
             let qp = qp_builder.build_ex().unwrap().into();
 
@@ -353,7 +353,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     OPEN_VERBS.call_once(|| unsafe {
                         CTX = Some(id.get_device_context().unwrap().clone());
                         PD = Some(CTX.as_ref().unwrap().alloc_pd().unwrap());
-                        CQ = Some(Arc::new(
+                        CQ = Some(
                             CTX.as_ref()
                                 .unwrap()
                                 .create_cq_builder()
@@ -361,7 +361,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 .build_ex()
                                 .unwrap()
                                 .into(),
-                        ));
+                        );
                     });
                     guard.create_qp();
                 }

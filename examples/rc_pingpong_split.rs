@@ -28,12 +28,12 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use clap::{Parser, ValueEnum};
-use ouroboros::self_referencing;
 use postcard::{from_bytes, to_allocvec};
 use serde::{Deserialize, Serialize};
 use sideway::ibverbs::address::{AddressHandleAttribute, Gid};
 use sideway::ibverbs::completion::{
-    CreateCompletionQueueWorkCompletionFlags, ExtendedCompletionQueue, ExtendedWorkCompletion, WorkCompletionStatus,
+    CreateCompletionQueueWorkCompletionFlags, ExtendedCompletionQueue, ExtendedWorkCompletion, GenericCompletionQueue,
+    WorkCompletionStatus,
 };
 use sideway::ibverbs::device::{Device, DeviceInfo, DeviceList};
 use sideway::ibverbs::device_context::{DeviceContext, Mtu};
@@ -113,20 +113,15 @@ impl ValueEnum for PathMtu {
     }
 }
 
-#[self_referencing]
 struct PingPongContext {
     ctx: Arc<DeviceContext>,
-    pd: Arc<ProtectionDomain>,
-    send_buf: Arc<Vec<u8>>,
+    _pd: Arc<ProtectionDomain>,
+    _send_buf: Arc<Vec<u8>>,
     send_mr: Arc<MemoryRegion>,
-    recv_buf: Arc<Vec<u8>>,
+    _recv_buf: Arc<Vec<u8>>,
     recv_mr: Arc<MemoryRegion>,
-    #[borrows(ctx)]
-    #[covariant]
-    cq: ExtendedCompletionQueue<'this>,
-    #[borrows(pd, cq)]
-    #[covariant]
-    qp: ExtendedQueuePair<'this>,
+    cq: Arc<ExtendedCompletionQueue>,
+    qp: ExtendedQueuePair,
     size: u32,
     completion_timestamp_mask: u64,
 }
@@ -170,59 +165,55 @@ impl PingPongContext {
             .unwrap_or_else(|_| panic!("Couldn't register recv MR"))
         };
 
-        Ok(PingPongContext::new(
-            context,
-            pd,
-            send_buf,
+        let mut cq_builder = context.create_cq_builder();
+        if use_ts {
+            cq_builder.setup_wc_flags(
+                CreateCompletionQueueWorkCompletionFlags::StandardFlags
+                    | CreateCompletionQueueWorkCompletionFlags::CompletionTimestamp,
+            );
+        }
+        let cq = cq_builder.setup_cqe(rx_depth + 1).build_ex().unwrap();
+
+        let cq_for_qp = GenericCompletionQueue::from(Arc::clone(&cq));
+
+        let mut builder = pd.create_qp_builder();
+
+        let mut qp = builder
+            .setup_max_inline_data(128)
+            .setup_send_cq(cq_for_qp.clone())
+            .setup_recv_cq(cq_for_qp)
+            .setup_max_send_wr(1)
+            .setup_max_recv_wr(rx_depth)
+            .build_ex()
+            .unwrap_or_else(|_| panic!("Couldn't create QP"));
+
+        let mut attr = QueuePairAttribute::new();
+        attr.setup_state(QueuePairState::Init)
+            .setup_pkey_index(0)
+            .setup_port(ib_port)
+            .setup_access_flags(AccessFlags::LocalWrite | AccessFlags::RemoteWrite);
+        qp.modify(&attr).expect("Failed to modify QP to INIT");
+
+        Ok(PingPongContext {
+            ctx: context,
+            _pd: pd,
+            _send_buf: send_buf,
             send_mr,
-            recv_buf,
+            _recv_buf: recv_buf,
             recv_mr,
-            |context: &Arc<DeviceContext>| {
-                let mut cq_builder = context.create_cq_builder();
-                if use_ts {
-                    cq_builder.setup_wc_flags(
-                        CreateCompletionQueueWorkCompletionFlags::StandardFlags
-                            | CreateCompletionQueueWorkCompletionFlags::CompletionTimestamp,
-                    );
-                }
-                cq_builder.setup_cqe(rx_depth + 1).build_ex().unwrap()
-            },
-            |pd: &Arc<ProtectionDomain>, cq| {
-                let mut builder = pd.create_qp_builder();
-
-                let mut qp = builder
-                    .setup_max_inline_data(128)
-                    .setup_send_cq(cq)
-                    .setup_recv_cq(cq)
-                    .setup_max_send_wr(1)
-                    .setup_max_recv_wr(rx_depth)
-                    .build_ex()
-                    .unwrap_or_else(|_| panic!("Couldn't create QP"));
-
-                let mut attr = QueuePairAttribute::new();
-                attr.setup_state(QueuePairState::Init)
-                    .setup_pkey_index(0)
-                    .setup_port(ib_port)
-                    .setup_access_flags(AccessFlags::LocalWrite | AccessFlags::RemoteWrite);
-                qp.modify(&attr).expect("Failed to modify QP to INIT");
-
-                qp
-            },
+            cq,
+            qp,
             size,
             completion_timestamp_mask,
-        ))
+        })
     }
 
     fn post_recv(&mut self, num: u32) -> Result<(), String> {
-        for _i in 0..num {
-            let (mut guard, lkey, ptr, size) = self.with_mut(|fields| {
-                (
-                    fields.qp.start_post_recv(),
-                    fields.recv_mr.lkey(),
-                    fields.recv_mr.get_ptr() as u64,
-                    *fields.size,
-                )
-            });
+        for _ in 0..num {
+            let mut guard = self.qp.start_post_recv();
+            let lkey = self.recv_mr.lkey();
+            let ptr = self.recv_mr.get_ptr() as u64;
+            let size = self.size;
 
             let recv_handle = guard.construct_wr(RECV_WR_ID);
 
@@ -230,21 +221,17 @@ impl PingPongContext {
                 recv_handle.setup_sge(lkey, ptr, size);
             };
 
-            guard.post().unwrap();
+            guard.post().map_err(|err| err.to_string())?;
         }
 
         Ok(())
     }
 
     fn post_send(&mut self) -> Result<(), PostSendError> {
-        let (mut guard, lkey, ptr, size) = self.with_mut(|fields| {
-            (
-                fields.qp.start_post_send(),
-                fields.send_mr.lkey(),
-                fields.send_mr.get_ptr() as u64,
-                *fields.size,
-            )
-        });
+        let mut guard = self.qp.start_post_send();
+        let lkey = self.send_mr.lkey();
+        let ptr = self.send_mr.get_ptr() as u64;
+        let size = self.size;
 
         let send_handle = guard.construct_wr(SEND_WR_ID, WorkRequestFlags::Signaled).setup_send();
 
@@ -277,7 +264,7 @@ impl PingPongContext {
             .setup_grh_dest_gid(&remote_context.gid)
             .setup_grh_hop_limit(1);
         attr.setup_address_vector(&ah_attr);
-        self.with_qp_mut(|qp| qp.modify(&attr).expect("Failed to modify QP to RTR"));
+        self.qp.modify(&attr).expect("Failed to modify QP to RTR");
 
         let mut attr = QueuePairAttribute::new();
         attr.setup_state(QueuePairState::ReadyToSend)
@@ -286,7 +273,7 @@ impl PingPongContext {
             .setup_retry_cnt(7)
             .setup_rnr_retry(7)
             .setup_max_read_atomic(0);
-        self.with_qp_mut(|qp| qp.modify(&attr).expect("Failed to modify QP to RTS"));
+        self.qp.modify(&attr).expect("Failed to modify QP to RTS");
 
         Ok(())
     }
@@ -325,7 +312,7 @@ impl PingPongContext {
                         let delta: u64 = if timestamp >= ts_param.completion_recv_prev_time {
                             timestamp - ts_param.completion_recv_prev_time
                         } else {
-                            self.borrow_completion_timestamp_mask() - ts_param.completion_recv_prev_time + timestamp + 1
+                            self.completion_timestamp_mask - ts_param.completion_recv_prev_time + timestamp + 1
                         };
 
                         ts_param.completion_recv_max_time_delta = ts_param.completion_recv_max_time_delta.max(delta);
@@ -392,7 +379,7 @@ fn main() -> anyhow::Result<()> {
 
     let mut ctx = PingPongContext::build(&device, args.size, rx_depth, args.ib_port, args.ts)?;
 
-    let gid = ctx.borrow_ctx().query_gid(args.ib_port, args.gid_idx.into()).unwrap();
+    let gid = ctx.ctx.query_gid(args.ib_port, args.gid_idx.into()).unwrap();
     let psn = rand::random::<u32>() & 0xFFFFFF;
 
     ctx.post_recv(rx_depth).unwrap();
@@ -400,7 +387,7 @@ fn main() -> anyhow::Result<()> {
 
     println!(
         " local address: QPN {:#06x}, PSN {psn:#08x}, GID {gid}",
-        ctx.borrow_qp().qp_number()
+        ctx.qp.qp_number()
     );
 
     let mut stream = match args.server_ip {
@@ -440,7 +427,7 @@ fn main() -> anyhow::Result<()> {
 
     let local_context = PingPongDestination {
         lid: 1,
-        qp_number: ctx.borrow_qp().qp_number(),
+        qp_number: ctx.qp.qp_number(),
         packet_seq_number: psn,
         gid,
     };
@@ -470,7 +457,7 @@ fn main() -> anyhow::Result<()> {
             let mut need_post_send = false;
 
             {
-                match ctx.borrow_cq().start_poll() {
+                match ctx.cq.start_poll() {
                     Ok(mut poller) => {
                         while let Some(wc) = poller.next() {
                             ctx.parse_single_work_completion(

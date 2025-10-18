@@ -1,3 +1,4 @@
+use sideway::ibverbs::completion::GenericCompletionQueue;
 use sideway::ibverbs::{
     address::{AddressHandleAttribute, GidType},
     device,
@@ -25,15 +26,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         let _comp_channel = ctx.create_comp_channel().unwrap();
         let mut cq_builder = ctx.create_cq_builder();
-        let sq = cq_builder.setup_cqe(128).build().unwrap();
-        let rq = cq_builder.setup_cqe(128).build().unwrap();
+        let sq = GenericCompletionQueue::from(cq_builder.setup_cqe(128).build().unwrap());
+        let rq = GenericCompletionQueue::from(cq_builder.setup_cqe(128).build().unwrap());
 
         let mut builder = pd.create_qp_builder();
 
         let mut qp = builder
             .setup_max_inline_data(128)
-            .setup_send_cq(&sq)
-            .setup_recv_cq(&rq)
+            .setup_send_cq(sq.clone())
+            .setup_recv_cq(rq.clone())
             .build()
             .unwrap();
 

@@ -21,6 +21,7 @@
 //!
 //! - Server side:
 //! ```no_run
+//! use sideway::ibverbs::completion::GenericCompletionQueue;
 //! use sideway::ibverbs::queue_pair::{QueuePair, QueuePairState};
 //! use sideway::rdmacm::communication_manager::{ConnectionParameter, EventChannel, EventType, PortSpace};
 //! use std::net::SocketAddr;
@@ -42,7 +43,7 @@
 //!                 let new_id = event.cm_id().unwrap();
 //!                 let ctx = new_id.get_device_context().unwrap();
 //!                 let pd = ctx.alloc_pd().unwrap();
-//!                 let cq = ctx.create_cq_builder().setup_cqe(1).build_ex().unwrap();
+//!                 let cq = GenericCompletionQueue::from(ctx.create_cq_builder().setup_cqe(1).build_ex().unwrap());
 //!
 //!                 let mut qp_builder = pd.create_qp_builder();
 //!                 qp_builder
@@ -50,8 +51,8 @@
 //!                     .setup_max_send_sge(1)
 //!                     .setup_max_recv_wr(1)
 //!                     .setup_max_recv_sge(1)
-//!                     .setup_send_cq(&cq)
-//!                     .setup_recv_cq(&cq);
+//!                     .setup_send_cq(cq.clone())
+//!                     .setup_recv_cq(cq.clone());
 //!                 let mut qp = qp_builder.build_ex().unwrap();
 //!
 //!                 // You could change the attr after getting it, but for now we use the default one
@@ -76,8 +77,7 @@
 //!
 //! - Client side:
 //! ```no_run
-//! use ouroboros::self_referencing;
-//! use sideway::ibverbs::completion::{CreateCompletionQueueWorkCompletionFlags, ExtendedCompletionQueue};
+//! use sideway::ibverbs::completion::{CreateCompletionQueueWorkCompletionFlags, GenericCompletionQueue};
 //! use sideway::ibverbs::device_context::DeviceContext;
 //! use sideway::ibverbs::protection_domain::ProtectionDomain;
 //! use sideway::ibverbs::queue_pair::{ExtendedQueuePair, QueuePair, QueuePairState};
@@ -87,16 +87,11 @@
 //! use std::sync::Arc;
 //! use std::time::Duration;
 //!
-//! #[self_referencing]
 //! struct EndpointResources {
 //!     ctx: Arc<DeviceContext>,
 //!     pd: Arc<ProtectionDomain>,
-//!     #[borrows(ctx)]
-//!     #[covariant]
-//!     cq: ExtendedCompletionQueue<'this>,
-//!     #[borrows(pd, cq)]
-//!     #[covariant]
-//!     qp: ExtendedQueuePair<'this>,
+//!     cq: GenericCompletionQueue,
+//!     qp: ExtendedQueuePair,
 //! }
 //!
 //! fn main() {
@@ -119,49 +114,39 @@
 //!             EventType::RouteResolved => {
 //!                 let ctx = id.get_device_context().unwrap();
 //!                 let pd = ctx.alloc_pd().unwrap();
-//!                 resources.get_or_insert_with(|| {
-//!                     EndpointResources::new(
-//!                         ctx,
-//!                         pd,
-//!                         |ctx| {
-//!                             let cq = ctx
-//!                                 .create_cq_builder()
-//!                                 .setup_wc_flags(CreateCompletionQueueWorkCompletionFlags::StandardFlags)
-//!                                 .setup_cqe(1)
-//!                                 .build_ex()
-//!                                 .unwrap();
-//!                             cq
-//!                         },
-//!                         |pd, cq| {
-//!                             let qp = pd
-//!                                 .create_qp_builder()
-//!                                 .setup_send_cq(cq)
-//!                                 .setup_recv_cq(cq)
-//!                                 .build_ex()
-//!                                 .unwrap();
-//!                             qp
-//!                         },
-//!                     )
-//!                 });
+//!                 let cq: GenericCompletionQueue = ctx
+//!                     .create_cq_builder()
+//!                     .setup_wc_flags(CreateCompletionQueueWorkCompletionFlags::StandardFlags)
+//!                     .setup_cqe(1)
+//!                     .build_ex()
+//!                     .unwrap()
+//!                     .into();
+//!                 let mut qp_builder = pd.create_qp_builder();
+//!                 let mut qp = qp_builder
+//!                     .setup_send_cq(cq.clone())
+//!                     .setup_recv_cq(cq.clone())
+//!                     .build_ex()
+//!                     .unwrap();
 //!
+//!                 qp.modify(&id.get_qp_attr(QueuePairState::Init).unwrap()).unwrap();
+//!
+//!                 let entry = resources.get_or_insert_with(|| EndpointResources { ctx, pd, cq, qp });
 //!                 let attr = id.get_qp_attr(QueuePairState::Init).unwrap();
-//!                 resources.as_mut().unwrap().with_qp_mut(|qp| {
-//!                     qp.modify(&attr).unwrap();
-//!                     let mut param = ConnectionParameter::new();
-//!                     param.setup_qp_number(qp.qp_number());
-//!                     id.connect(param).unwrap()
-//!                 });
+//!                 entry.qp.modify(&attr).unwrap();
+//!                 let mut param = ConnectionParameter::new();
+//!                 param.setup_qp_number(entry.qp.qp_number());
+//!                 id.connect(param).unwrap();
 //!             },
 //!             EventType::ConnectResponse => {
-//!                 resources.as_mut().unwrap().with_qp_mut(|qp| {
+//!                 if let Some(entry) = resources.as_mut() {
 //!                     let attr = id.get_qp_attr(QueuePairState::ReadyToReceive).unwrap();
-//!                     qp.modify(&attr).unwrap();
+//!                     entry.qp.modify(&attr).unwrap();
 //!
 //!                     let attr = id.get_qp_attr(QueuePairState::ReadyToSend).unwrap();
-//!                     qp.modify(&attr).unwrap();
+//!                     entry.qp.modify(&attr).unwrap();
 //!
 //!                     id.establish().unwrap();
-//!                 });
+//!                 }
 //!             },
 //!             _ => todo!(),
 //!         }
