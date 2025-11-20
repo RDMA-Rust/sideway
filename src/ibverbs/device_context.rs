@@ -416,6 +416,11 @@ impl PortAttr {
         }
         (self.attr.active_speed as u32).into()
     }
+
+    /// Get the lid of this port.
+    pub fn lid(&self) -> u16 {
+        self.attr.lid
+    }
 }
 
 /// The attributes of an RDMA device that is associated with a context.
