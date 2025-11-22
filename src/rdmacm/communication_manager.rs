@@ -238,6 +238,7 @@ pub struct EventChannel {
 /// An RDMA CM identifier (`rdma_cm_id`), conceptually similar to a socket, an [`Identifier`] would
 /// report some of the RDMA CM operations' result as an [`Event`] to its [`EventChannel`].
 pub struct Identifier {
+    _event_channel: Arc<EventChannel>,
     cm_id: NonNull<rdma_cm_id>,
     user_context: Mutex<Option<Arc<dyn Any + Send + Sync>>>,
 }
@@ -551,9 +552,10 @@ impl Drop for Event {
     }
 }
 
-fn new_cm_id_for_raw(raw: *mut rdma_cm_id) -> Arc<Identifier> {
+fn new_cm_id_for_raw(event_channel: Arc<EventChannel>, raw: *mut rdma_cm_id) -> Arc<Identifier> {
     let cm = unsafe {
         Arc::new(Identifier {
+            _event_channel: event_channel,
             cm_id: NonNull::new(raw).unwrap_unchecked(),
             user_context: Mutex::new(None),
         })
@@ -571,35 +573,35 @@ fn new_cm_id_for_raw(raw: *mut rdma_cm_id) -> Arc<Identifier> {
 }
 
 impl EventChannel {
-    pub fn new() -> Result<EventChannel, CreateEventChannelError> {
+    pub fn new() -> Result<Arc<EventChannel>, CreateEventChannelError> {
         let channel = unsafe { rdma_create_event_channel() };
 
         if channel.is_null() {
             return Err(CreateEventChannelErrorKind::Rdmacm(io::Error::last_os_error()).into());
         }
 
-        Ok(EventChannel {
+        Ok(Arc::new(EventChannel {
             channel: unsafe { NonNull::new(channel).unwrap_unchecked() },
-        })
+        }))
     }
 
     /// Create a new [`Identifier`] for the event channel, all later events associated with this
     /// [`Identifier`] would be delivered to the event channel.
-    pub fn create_id(&mut self, port_space: PortSpace) -> Result<Arc<Identifier>, CreateIdentifierError> {
+    pub fn create_id(self: &Arc<Self>, port_space: PortSpace) -> Result<Arc<Identifier>, CreateIdentifierError> {
         let mut cm_id_ptr: *mut rdma_cm_id = null_mut();
-        let ret = unsafe { rdma_create_id(self.channel.as_mut(), &mut cm_id_ptr, null_mut(), port_space as u32) };
+        let ret = unsafe { rdma_create_id(self.channel.as_ptr(), &mut cm_id_ptr, null_mut(), port_space as u32) };
 
         if ret < 0 {
             return Err(CreateIdentifierErrorKind::Rdmacm(io::Error::last_os_error()).into());
         }
 
-        Ok(new_cm_id_for_raw(cm_id_ptr))
+        Ok(new_cm_id_for_raw(self.clone(), cm_id_ptr))
     }
 
     /// Get a new [`Event`] from the event channel, if the event channel is blocking mode, this
     /// method would block until a new event is available, otherwise, this method would return an
     /// error if no new event is available.
-    pub fn get_cm_event(&mut self) -> Result<Event, GetEventError> {
+    pub fn get_cm_event(self: &Arc<Self>) -> Result<Event, GetEventError> {
         let mut event_ptr = MaybeUninit::<*mut rdma_cm_event>::uninit();
 
         let ret = unsafe { rdma_get_cm_event(self.channel.as_ptr(), event_ptr.as_mut_ptr()) };
@@ -619,7 +621,7 @@ impl EventChannel {
             assert_ne!(raw_cm_id, null_mut());
             if event.as_ref().event == EventType::ConnectRequest as u32 {
                 // For connect requests, create a new CommunicationManager
-                Some(new_cm_id_for_raw(raw_cm_id))
+                Some(new_cm_id_for_raw(self.clone(), raw_cm_id))
             } else {
                 // For other events, return the existing CommunicationManager
                 let context_ptr = (*raw_cm_id).context as *mut Weak<Identifier>;
@@ -1012,9 +1014,10 @@ mod tests {
     #[test]
     fn test_cm_id_reference_count() -> Result<(), Box<dyn std::error::Error>> {
         match EventChannel::new() {
-            Ok(mut channel) => {
+            Ok(channel) => {
                 let id = channel.create_id(PortSpace::Tcp).unwrap();
 
+                assert_eq!(Arc::strong_count(&channel), 2);
                 assert_eq!(Arc::strong_count(&id), 1);
 
                 let _ = id.resolve_addr(
@@ -1048,7 +1051,7 @@ mod tests {
     #[test]
     fn test_channel_event_fd() -> Result<(), Box<dyn std::error::Error>> {
         match EventChannel::new() {
-            Ok(mut channel) => {
+            Ok(channel) => {
                 let id = channel.create_id(PortSpace::Tcp).unwrap();
 
                 assert_eq!(Arc::strong_count(&id), 1);
@@ -1059,6 +1062,7 @@ mod tests {
                     let poller = Poller::new().expect("Failed to create poller");
                     let key = 233;
 
+                    assert_eq!(Arc::strong_count(&channel), 2);
                     unsafe { poller.add(&channel, Event::readable(key)).unwrap() };
 
                     let mut events = Events::new();
@@ -1072,8 +1076,10 @@ mod tests {
 
                         let event = channel.get_cm_event().unwrap();
                         assert_eq!(event.event_type(), EventType::AddressResolved);
+                        assert_eq!(Arc::strong_count(&channel), 2);
 
                         event.ack().unwrap();
+                        assert_eq!(Arc::strong_count(&channel), 2);
                     }
                 });
 
@@ -1084,6 +1090,7 @@ mod tests {
                 );
 
                 dispatcher.join().unwrap();
+                assert_eq!(Arc::strong_count(&id), 1);
 
                 Ok(())
             },
@@ -1094,7 +1101,7 @@ mod tests {
     #[test]
     fn test_bind_on_the_same_port() -> Result<(), Box<dyn std::error::Error>> {
         match EventChannel::new() {
-            Ok(mut channel) => {
+            Ok(channel) => {
                 let id = channel.create_id(PortSpace::Tcp).unwrap();
                 let address = SocketAddr::from((IpAddr::from_str("0.0.0.0").expect("Invalid IP address"), 8080));
 
@@ -1120,10 +1127,28 @@ mod tests {
     #[test]
     fn test_conn_param() -> Result<(), Box<dyn std::error::Error>> {
         match EventChannel::new() {
-            Ok(mut channel) => {
+            Ok(channel) => {
                 let _id = channel.create_id(PortSpace::Tcp).unwrap();
 
                 let _param = ConnectionParameter::new();
+
+                Ok(())
+            },
+            Err(_) => Ok(()),
+        }
+    }
+
+    #[test]
+    fn test_event_channel_outlives_identifier_arc_counts() -> Result<(), Box<dyn std::error::Error>> {
+        match EventChannel::new() {
+            Ok(channel) => {
+                let id = channel.create_id(PortSpace::Tcp).unwrap();
+
+                assert_eq!(Arc::strong_count(&channel), 2);
+
+                drop(id);
+
+                assert_eq!(Arc::strong_count(&channel), 1);
 
                 Ok(())
             },

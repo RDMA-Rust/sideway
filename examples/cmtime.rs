@@ -88,8 +88,8 @@ static COMPLETED: LazyLock<[AtomicU32; Step::Count as usize]> =
     LazyLock::new(|| [const { AtomicU32::new(0) }; Step::Count as usize]);
 static TIMES: LazyLock<Mutex<[(Instant, Instant); Step::Count as usize]>> =
     LazyLock::new(|| Mutex::new([(Instant::recent(), Instant::recent()); Step::Count as usize]));
-static CHANNEL: LazyLock<Mutex<EventChannel>> =
-    LazyLock::new(|| Mutex::new(EventChannel::new().expect("Failed to create rdma cm event channel")));
+static CHANNEL: LazyLock<Arc<EventChannel>> =
+    LazyLock::new(|| EventChannel::new().expect("Failed to create rdma cm event channel"));
 static NODE_IDX: LazyLock<AtomicU32> = LazyLock::new(|| AtomicU32::new(0));
 
 macro_rules! start_perf {
@@ -287,7 +287,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 times: [(Instant::recent(), Instant::recent()); Step::Count as usize],
             });
             start_perf!(node, Step::CreateId);
-            let id = CHANNEL.lock().unwrap().create_id(PortSpace::Tcp)?;
+            let id = CHANNEL.create_id(PortSpace::Tcp)?;
             end_perf!(node, Step::CreateId);
             node.lock().unwrap().id = Some(id.clone());
             id.setup_context(node);
@@ -297,7 +297,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         end_time!(Step::CreateId, results, &nodes);
 
         let _dispatcher = thread::spawn(move || loop {
-            match CHANNEL.lock().unwrap().get_cm_event() {
+            match CHANNEL.get_cm_event() {
                 Ok(event) => cma_handler(event.cm_id().unwrap(), event, Some(resp_tx.clone()), None, None),
                 Err(err) => {
                     eprintln!("{err}");
@@ -419,7 +419,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         println!("{table}");
     } else {
-        let id = CHANNEL.lock().unwrap().create_id(PortSpace::Tcp)?;
+        let id = CHANNEL.create_id(PortSpace::Tcp)?;
         id.bind_addr(SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), args.port))?;
         id.listen(1024)?;
 
@@ -429,7 +429,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let (disc_tx, disc_rx) = channel();
 
         let _dispatcher = thread::spawn(move || loop {
-            match CHANNEL.lock().unwrap().get_cm_event() {
+            match CHANNEL.get_cm_event() {
                 Ok(event) => cma_handler(
                     event.cm_id().unwrap(),
                     event,
