@@ -59,4 +59,13 @@ impl ProtectionDomain {
     pub fn create_qp_builder(self: &Arc<Self>) -> QueuePairBuilder {
         QueuePairBuilder::new(self)
     }
+
+    /// # Safety
+    ///
+    /// Return the handle of protection domain.
+    /// We mark this method unsafe because the lifetime of `ibv_pd` is not associated
+    /// with the return value.
+    pub unsafe fn pd(&self) -> NonNull<ibv_pd> {
+        self.pd
+    }
 }

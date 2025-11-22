@@ -133,7 +133,7 @@ impl fmt::Display for Guid {
 /// A context of the RDMA device, could be used to query its resources or creating PD or CQ.
 #[derive(Debug)]
 pub struct DeviceContext {
-    pub(crate) context: *mut ibv_context,
+    pub(crate) context: NonNull<ibv_context>,
 }
 
 unsafe impl Send for DeviceContext {}
@@ -471,7 +471,7 @@ impl DeviceAttr {
 impl Drop for DeviceContext {
     fn drop(&mut self) {
         unsafe {
-            ibv_close_device(self.context);
+            ibv_close_device(self.context.as_ptr());
         }
     }
 }
@@ -479,7 +479,7 @@ impl Drop for DeviceContext {
 impl DeviceContext {
     /// Allocate a protection domain.
     pub fn alloc_pd(self: &Arc<Self>) -> Result<Arc<ProtectionDomain>, AllocateProtectionDomainError> {
-        let pd = unsafe { ibv_alloc_pd(self.context) };
+        let pd = unsafe { ibv_alloc_pd(self.context.as_ptr()) };
 
         if pd.is_null() {
             return Err(AllocateProtectionDomainErrorKind::Ibverbs(io::Error::last_os_error()).into());
@@ -508,7 +508,7 @@ impl DeviceContext {
     pub fn query_device(&self) -> Result<DeviceAttr, QueryDeviceError> {
         let mut attr = MaybeUninit::<ibv_device_attr_ex>::uninit();
         unsafe {
-            match ibv_query_device_ex(self.context, ptr::null(), attr.as_mut_ptr()) {
+            match ibv_query_device_ex(self.context.as_ptr(), ptr::null(), attr.as_mut_ptr()) {
                 0 => Ok(DeviceAttr {
                     attr: attr.assume_init(),
                 }),
@@ -521,7 +521,7 @@ impl DeviceContext {
     pub fn query_port(&self, port_num: u8) -> Result<PortAttr, QueryPortError> {
         let mut attr = MaybeUninit::<ibv_port_attr>::uninit();
         unsafe {
-            match ibv_query_port(self.context, port_num, attr.as_mut_ptr()) {
+            match ibv_query_port(self.context.as_ptr(), port_num, attr.as_mut_ptr()) {
                 0 => Ok(PortAttr {
                     attr: attr.assume_init(),
                 }),
@@ -537,7 +537,7 @@ impl DeviceContext {
     pub fn query_gid(&self, port_num: u8, gid_index: u32) -> Result<Gid, QueryGidError> {
         let mut gid = Gid::default();
         unsafe {
-            match ibv_query_gid(self.context, port_num, gid_index as i32, gid.as_mut()) {
+            match ibv_query_gid(self.context.as_ptr(), port_num, gid_index as i32, gid.as_mut()) {
                 0 => Ok(gid),
                 ret => Err(QueryGidError {
                     port_num,
@@ -552,7 +552,7 @@ impl DeviceContext {
     pub fn query_gid_ex(&self, port_num: u8, gid_index: u32) -> Result<GidEntry, QueryGidError> {
         let mut entry = GidEntry::default();
         unsafe {
-            match ibv_query_gid_ex(self.context, port_num as u32, gid_index, &mut entry.0, 0) {
+            match ibv_query_gid_ex(self.context.as_ptr(), port_num as u32, gid_index, &mut entry.0, 0) {
                 0 => Ok(entry),
                 ret => Err(QueryGidError {
                     port_num,
@@ -576,7 +576,7 @@ impl DeviceContext {
     pub fn query_gid_type(&self, port_num: u8, gid_index: u32) -> Result<u32, QueryGidError> {
         let mut gid_type = u32::default();
         unsafe {
-            match ibv_query_gid_type(self.context, port_num, gid_index, &mut gid_type) {
+            match ibv_query_gid_type(self.context.as_ptr(), port_num, gid_index, &mut gid_type) {
                 0 => Ok(gid_type),
                 ret => Err(QueryGidError {
                     port_num,
@@ -668,7 +668,7 @@ impl DeviceContext {
         let mut entries = vec![GidEntry::default(); size as _];
 
         unsafe {
-            valid_size = ibv_query_gid_table(self.context, entries.as_mut_ptr() as _, entries.len(), 0);
+            valid_size = ibv_query_gid_table(self.context.as_ptr(), entries.as_mut_ptr() as _, entries.len(), 0);
         };
 
         if valid_size == (-libc::EOPNOTSUPP).try_into().unwrap() {
@@ -681,12 +681,22 @@ impl DeviceContext {
         entries.truncate(valid_size.try_into().unwrap());
         Ok(entries)
     }
+
+    /// # Safety
+    ///
+    /// Return the handle of device context.
+    /// We mark this method unsafe because the lifetime of `ibv_context` is not associated
+    /// with the return value.
+    pub unsafe fn context(&self) -> NonNull<ibv_context> {
+        self.context
+    }
 }
 
 impl DeviceInfo for DeviceContext {
     fn name(&self) -> String {
         unsafe {
-            let name = ibv_get_device_name((*self.context).device);
+            let ctx = self.context.as_ref();
+            let name = ibv_get_device_name(ctx.device);
             if name.is_null() {
                 String::new()
             } else {
@@ -696,11 +706,17 @@ impl DeviceInfo for DeviceContext {
     }
 
     fn guid(&self) -> Guid {
-        unsafe { Guid(ibv_get_device_guid((*self.context).device)) }
+        unsafe {
+            let ctx = self.context.as_ref();
+            Guid(ibv_get_device_guid(ctx.device))
+        }
     }
 
     fn transport_type(&self) -> TransportType {
-        unsafe { (*(*self.context).device).transport_type.into() }
+        unsafe {
+            let ctx = self.context.as_ref();
+            (*ctx.device).transport_type.into()
+        }
     }
 }
 

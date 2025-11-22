@@ -57,6 +57,15 @@ impl MemoryRegion {
     pub fn get_ptr(&self) -> usize {
         unsafe { self.mr.as_ref().addr as _ }
     }
+
+    /// # Safety
+    ///
+    /// Return the handle of memory region.
+    /// We mark this method unsafe because the lifetime of `ibv_mr` is not associated
+    /// with the return value.
+    pub unsafe fn mr(&self) -> NonNull<ibv_mr> {
+        self.mr
+    }
 }
 
 impl MemoryRegion {

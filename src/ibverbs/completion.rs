@@ -220,7 +220,7 @@ impl Drop for CompletionChannel {
 
 impl CompletionChannel {
     pub fn new(dev_ctx: &Arc<DeviceContext>) -> Result<Arc<CompletionChannel>, CreateCompletionChannelError> {
-        let comp_channel = unsafe { ibv_create_comp_channel(dev_ctx.context) };
+        let comp_channel = unsafe { ibv_create_comp_channel(dev_ctx.context.as_ptr()) };
         if comp_channel.is_null() {
             Err(CreateCompletionChannelErrorKind::Ibverbs(io::Error::last_os_error()).into())
         } else {
@@ -252,6 +252,15 @@ impl CompletionChannel {
             }
             Ok(())
         }
+    }
+
+    /// # Safety
+    ///
+    /// Return the handle of completion channel.
+    /// We mark this method unsafe because the lifetime of `ibv_comp_channel` is not associated
+    /// with the return value.
+    pub unsafe fn comp_channel(&self) -> NonNull<ibv_comp_channel> {
+        self.channel
     }
 }
 
@@ -477,7 +486,7 @@ impl CompletionQueueBuilder {
         // create a copy of init_attr since ibv_create_cq_ex requires a mutable pointer to it
         let mut init_attr = self.init_attr;
 
-        let cq_ex = unsafe { ibv_create_cq_ex(self.dev_ctx.context, &mut init_attr as *mut _) };
+        let cq_ex = unsafe { ibv_create_cq_ex(self.dev_ctx.context.as_ptr(), &mut init_attr as *mut _) };
         if cq_ex.is_null() {
             Err(CreateCompletionQueueErrorKind::Ibverbs(io::Error::last_os_error()).into())
         } else {
@@ -496,7 +505,7 @@ impl CompletionQueueBuilder {
     pub fn build(&self) -> Result<Arc<BasicCompletionQueue>, CreateCompletionQueueError> {
         let cq = unsafe {
             ibv_create_cq(
-                self.dev_ctx.context,
+                self.dev_ctx.context.as_ptr(),
                 self.init_attr.cqe as _,
                 self.init_attr.cq_context,
                 self.init_attr.channel,
