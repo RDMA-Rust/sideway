@@ -848,7 +848,8 @@ impl Identifier {
             let device_ctx = guard
                 .entry((*cm_id.as_ptr()).verbs as usize)
                 .or_insert(Arc::new(DeviceContext {
-                    context: (*cm_id.as_ptr()).verbs,
+                    // Safe due to the is_null() check above.
+                    context: NonNull::new((*cm_id.as_ptr()).verbs).unwrap(),
                 }));
 
             Some(device_ctx.clone())
