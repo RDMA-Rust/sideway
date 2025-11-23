@@ -8,6 +8,7 @@ use std::ptr::NonNull;
 use std::sync::Arc;
 
 use super::{
+    address::{AddressHandle, AddressHandleAttribute, CreateAddressHandleError},
     device_context::DeviceContext,
     memory_region::{MemoryRegion, RegisterMemoryRegionError},
     queue_pair::QueuePairBuilder,
@@ -52,6 +53,13 @@ impl ProtectionDomain {
         self: &Arc<Self>, ptr: usize, len: usize, access: AccessFlags,
     ) -> Result<Arc<MemoryRegion>, RegisterMemoryRegionError> {
         Ok(Arc::new(MemoryRegion::reg_mr(Arc::clone(self), ptr, len, access)?))
+    }
+
+    /// Create a new address handle on this protection domain.
+    pub fn create_ah(
+        self: &Arc<Self>, attr: &mut AddressHandleAttribute,
+    ) -> Result<AddressHandle, CreateAddressHandleError> {
+        AddressHandle::new(Arc::clone(self), attr)
     }
 
     /// Create a [`QueuePairBuilder`] for building QPs on this protection domain

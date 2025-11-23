@@ -2,12 +2,32 @@
 //! in RDMA communication, like [`Gid`] and [`AddressHandleAttribute`].
 use libc::IF_NAMESIZE;
 use rdma_mummy_sys::{
-    ibv_ah_attr, ibv_gid, ibv_gid_entry, ibv_global_route, IBV_GID_TYPE_IB, IBV_GID_TYPE_ROCE_V1, IBV_GID_TYPE_ROCE_V2,
+    ibv_ah, ibv_ah_attr, ibv_create_ah, ibv_gid, ibv_gid_entry, ibv_grh, ibv_global_route, IBV_GID_TYPE_IB,
+    IBV_GID_TYPE_ROCE_V1, IBV_GID_TYPE_ROCE_V2,
 };
 use serde::{Deserialize, Serialize};
 use std::ffi::CStr;
 use std::io;
+use std::ptr;
+use std::ptr::NonNull;
+use std::sync::Arc;
 use std::{fmt, mem::MaybeUninit, net::Ipv6Addr};
+
+use super::protection_domain::ProtectionDomain;
+
+/// Error returned by [`ProtectionDomain::create_ah`] for creating a new RDMA Address Handle.
+#[derive(Debug, thiserror::Error)]
+#[error("failed to create address handle")]
+#[non_exhaustive]
+pub struct CreateAddressHandleError(#[from] pub CreateAddressHandleErrorKind);
+
+/// The enum type for [`CreateAddressHandleError`].
+#[derive(Debug, thiserror::Error)]
+#[error(transparent)]
+#[non_exhaustive]
+pub enum CreateAddressHandleErrorKind {
+    Ibverbs(#[from] io::Error),
+}
 
 /// GID is a global identifier for sending packets between different subnets. For RoCEv1 and RoCEv2,
 /// it would correspond to an IP address set up on the ethernet device.
@@ -73,6 +93,133 @@ impl Gid {
     pub fn is_unicast_link_local(&self) -> bool {
         self.raw[0] == 0xfe && self.raw[1] & 0xc0 == 0x80
     }
+}
+
+/// Immutable wrapper around an [`ibv_grh`] that provides helpers for reading Global Routing Headers.
+#[repr(transparent)]
+pub struct GlobalRoutingHeader {
+    grh: ibv_grh,
+}
+
+impl GlobalRoutingHeader {
+    /// Size in bytes of a GRH header as represented on the wire.
+    pub const BYTE_LEN: usize = std::mem::size_of::<ibv_grh>();
+
+    /// Construct a GRH from a raw byte slice.
+    ///
+    /// The slice must contain at least [`BYTE_LEN`](Self::BYTE_LEN) bytes.
+    pub fn from_raw_slice(raw: &[u8]) -> Result<Self, GlobalRoutingHeaderError> {
+        Self::try_from(raw)
+    }
+
+    /// Return a reference to the underlying [`ibv_grh`] structure.
+    pub fn as_ibv_grh(&self) -> &ibv_grh {
+        &self.grh
+    }
+
+    /// Consume the wrapper and return the contained [`ibv_grh`].
+    pub fn into_inner(self) -> ibv_grh {
+        self.grh
+    }
+
+    /// Get the IPv6-style flow label carried in the header.
+    pub fn flow_label(&self) -> u32 {
+        u32::from_be(self.grh.version_tclass_flow) & 0x000f_ffff
+    }
+
+    /// Get the IPv6 traffic class encoded in the header.
+    pub fn traffic_class(&self) -> u8 {
+        ((u32::from_be(self.grh.version_tclass_flow) >> 20) & 0xff) as u8
+    }
+
+    /// Get the GRH version number.
+    pub fn version(&self) -> u8 {
+        (u32::from_be(self.grh.version_tclass_flow) >> 28) as u8
+    }
+
+    /// Payload length in bytes following the GRH.
+    pub fn payload_length(&self) -> u16 {
+        u16::from_be(self.grh.paylen)
+    }
+
+    /// Next header identifier.
+    pub fn next_header(&self) -> u8 {
+        self.grh.next_hdr
+    }
+
+    /// Hop limit value for the packet.
+    pub fn hop_limit(&self) -> u8 {
+        self.grh.hop_limit
+    }
+
+    /// Source GID extracted from the header.
+    pub fn source_gid(&self) -> Gid {
+        Gid::from(self.grh.sgid)
+    }
+
+    /// Destination GID extracted from the header.
+    pub fn destination_gid(&self) -> Gid {
+        Gid::from(self.grh.dgid)
+    }
+}
+
+impl fmt::Debug for GlobalRoutingHeader {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("GlobalRoutingHeader")
+            .field("version", &self.version())
+            .field("traffic_class", &self.traffic_class())
+            .field("flow_label", &self.flow_label())
+            .field("payload_length", &self.payload_length())
+            .field("next_header", &self.next_header())
+            .field("hop_limit", &self.hop_limit())
+            .field("source_gid", &self.source_gid())
+            .field("destination_gid", &self.destination_gid())
+            .finish()
+    }
+}
+
+impl From<ibv_grh> for GlobalRoutingHeader {
+    fn from(grh: ibv_grh) -> Self {
+        Self { grh }
+    }
+}
+
+impl From<GlobalRoutingHeader> for ibv_grh {
+    fn from(header: GlobalRoutingHeader) -> Self {
+        header.grh
+    }
+}
+
+impl AsRef<ibv_grh> for GlobalRoutingHeader {
+    fn as_ref(&self) -> &ibv_grh {
+        self.as_ibv_grh()
+    }
+}
+
+impl TryFrom<&[u8]> for GlobalRoutingHeader {
+    type Error = GlobalRoutingHeaderError;
+
+    fn try_from(value: &[u8]) -> Result<Self, Self::Error> {
+        if value.len() < Self::BYTE_LEN {
+            return Err(GlobalRoutingHeaderError::SliceTooSmall {
+                actual: value.len(),
+                expected: Self::BYTE_LEN,
+            });
+        }
+
+        let grh = unsafe { ptr::read_unaligned(value.as_ptr().cast::<ibv_grh>()) };
+
+        Ok(Self { grh })
+    }
+}
+
+/// Error returned when constructing a [`GlobalRoutingHeader`] from invalid input.
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum GlobalRoutingHeaderError {
+    /// The provided slice is smaller than the GRH header size.
+    #[error("raw slice length {actual} is smaller than required {expected} bytes")]
+    SliceTooSmall { actual: usize, expected: usize },
 }
 
 /// The type of a GID, determines the unlerlying wire format for sending packets. For communication
@@ -251,12 +398,40 @@ impl AddressHandleAttribute {
     }
 }
 
+pub struct AddressHandle {
+    pub(crate) handle: NonNull<ibv_ah>,
+    pub(crate) _pd: Arc<ProtectionDomain>,
+}
+
+impl AddressHandle {
+    pub fn new(pd: Arc<ProtectionDomain>, attr: &mut AddressHandleAttribute) -> Result<Self, CreateAddressHandleError> {
+        let pd_ptr = unsafe { pd.pd() };
+        let ah = unsafe { ibv_create_ah(pd_ptr.as_ptr(), &mut attr.attr as *mut _) };
+
+        Ok(AddressHandle {
+            handle: NonNull::new(ah).ok_or::<CreateAddressHandleError>(
+                CreateAddressHandleErrorKind::Ibverbs(io::Error::last_os_error()).into(),
+            )?,
+            _pd: pd,
+        })
+    }
+
+    /// # Safety
+    ///
+    /// Return the handle of address handle.
+    /// We mark this method unsafe because the lifetime of `ibv_ah` is not associated
+    /// with the return value.
+    pub unsafe fn ah(&self) -> NonNull<ibv_ah> {
+        self.handle
+    }
+}
 #[cfg(test)]
 mod tests {
-    use crate::ibverbs::address::Gid;
-    use rdma_mummy_sys::ibv_gid;
+    use super::{GlobalRoutingHeader, GlobalRoutingHeaderError, Gid};
+    use rdma_mummy_sys::{ibv_gid, ibv_grh};
     use rstest::rstest;
     use std::net::Ipv6Addr;
+    use std::ptr;
     use std::str::FromStr;
 
     #[rstest]
@@ -279,5 +454,52 @@ mod tests {
         let gid_ = ibv_gid { raw: octets };
         let gid = Gid::from(gid_);
         assert_eq!(format!("{gid}"), expected);
+    }
+
+    #[test]
+    fn test_global_routing_header_from_slice() {
+        let src_gid = Gid::from(Ipv6Addr::from_str("fe80::1").unwrap());
+        let dst_gid = Gid::from(Ipv6Addr::from_str("fe80::2").unwrap());
+
+        let grh = ibv_grh {
+            version_tclass_flow: 0x6000_0001u32.to_be(),
+            paylen: 0x1234u16.to_be(),
+            next_hdr: 0x1b,
+            hop_limit: 0x40,
+            sgid: src_gid.into(),
+            dgid: dst_gid.into(),
+        };
+
+        let mut raw = vec![0u8; GlobalRoutingHeader::BYTE_LEN];
+        unsafe {
+            ptr::copy_nonoverlapping(
+                (&grh as *const ibv_grh).cast::<u8>(),
+                raw.as_mut_ptr(),
+                GlobalRoutingHeader::BYTE_LEN,
+            );
+        }
+
+        let header = GlobalRoutingHeader::from_raw_slice(raw.as_slice()).unwrap();
+        assert_eq!(header.version(), 6);
+        assert_eq!(header.traffic_class(), 0);
+        assert_eq!(header.flow_label(), 1);
+        assert_eq!(header.payload_length(), 0x1234);
+        assert_eq!(header.next_header(), 0x1b);
+        assert_eq!(header.hop_limit(), 0x40);
+        assert_eq!(header.source_gid(), src_gid);
+        assert_eq!(header.destination_gid(), dst_gid);
+    }
+
+    #[test]
+    fn test_global_routing_header_from_slice_too_small() {
+        let raw = vec![0u8; GlobalRoutingHeader::BYTE_LEN - 1];
+        let err = GlobalRoutingHeader::from_raw_slice(raw.as_slice()).unwrap_err();
+
+        match err {
+            GlobalRoutingHeaderError::SliceTooSmall { actual, expected } => {
+                assert_eq!(actual, GlobalRoutingHeader::BYTE_LEN - 1);
+                assert_eq!(expected, GlobalRoutingHeader::BYTE_LEN);
+            },
+        }
     }
 }

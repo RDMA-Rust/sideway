@@ -404,6 +404,11 @@ impl PortAttr {
         self.attr.phys_state.into()
     }
 
+    /// Get the local identifier (LID) assigned to this port.
+    pub fn lid(&self) -> u16 {
+        self.attr.lid
+    }
+
     /// Get the active link width of this port.
     pub fn active_width(&self) -> PortWidth {
         self.attr.active_width.into()

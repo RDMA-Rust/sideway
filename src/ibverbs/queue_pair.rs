@@ -7,7 +7,7 @@ use rdma_mummy_sys::{
     ibv_qp_init_attr_ex, ibv_qp_init_attr_mask, ibv_qp_state, ibv_qp_to_qp_ex, ibv_qp_type, ibv_query_qp, ibv_recv_wr,
     ibv_rx_hash_conf, ibv_send_flags, ibv_send_wr, ibv_sge, ibv_wr_abort, ibv_wr_complete, ibv_wr_opcode,
     ibv_wr_rdma_read, ibv_wr_rdma_write, ibv_wr_rdma_write_imm, ibv_wr_send, ibv_wr_send_imm, ibv_wr_set_inline_data,
-    ibv_wr_set_inline_data_list, ibv_wr_set_sge, ibv_wr_set_sge_list, ibv_wr_start,
+    ibv_wr_set_inline_data_list, ibv_wr_set_sge, ibv_wr_set_sge_list, ibv_wr_set_ud_addr, ibv_wr_start,
 };
 use std::sync::{Arc, LazyLock};
 use std::{
@@ -19,7 +19,7 @@ use std::{
 };
 
 use super::{
-    address::{AddressHandleAttribute, Gid},
+    address::{AddressHandle, AddressHandleAttribute, Gid},
     completion::{CompletionQueue, GenericCompletionQueue},
     device_context::Mtu,
     protection_domain::ProtectionDomain,
@@ -407,7 +407,9 @@ pub trait QueuePair {
 mod private_traits {
     use std::io::IoSlice;
 
+    use crate::ibverbs::address::AddressHandle;
     use rdma_mummy_sys::ibv_sge;
+
     // This is the private part of PostSendGuard, which is a workaround for pub trait
     // not being able to have private functions.
     //
@@ -417,6 +419,8 @@ mod private_traits {
         fn setup_send(&mut self);
 
         fn setup_send_imm(&mut self, imm_data: u32);
+
+        fn setup_ud_addr(&mut self, ah: &AddressHandle, remote_qpn: u32, remote_qkey: u32);
 
         fn setup_write(&mut self, rkey: u32, remote_addr: u64);
 
@@ -992,9 +996,21 @@ impl QueuePairAttribute {
         self
     }
 
+    /// Setup the queue key (QKey) for this [`QueuePair`].
+    pub fn setup_qkey(&mut self, qkey: u32) -> &mut Self {
+        self.attr.qkey = qkey;
+        self.attr_mask |= QueuePairAttributeMask::QueueKey;
+        self
+    }
+
     /// Get the primary physical port number you filled in or queried from [`QueuePair::query`].
     pub fn port(&self) -> u8 {
         self.attr.port_num
+    }
+
+    /// Get the queue key (QKey) you filled in or queried from [`QueuePair::query`].
+    pub fn qkey(&self) -> u32 {
+        self.attr.qkey
     }
 
     /// Setup allowed remote operations for incoming packets. It's either 0 or
@@ -1386,6 +1402,12 @@ impl<'g, G: PostSendGuard> WorkRequestHandle<'g, G> {
         LocalBufferHandle { guard: self.guard }
     }
 
+    pub fn setup_ud_addr(self, ah: &AddressHandle, remote_qpn: u32, remote_qkey: u32) -> Self {
+        let WorkRequestHandle { guard } = self;
+        guard.setup_ud_addr(ah, remote_qpn, remote_qkey);
+        WorkRequestHandle { guard }
+    }
+
     pub fn setup_write(self, rkey: u32, remote_addr: u64) -> LocalBufferHandle<'g, G> {
         self.guard.setup_write(rkey, remote_addr);
         LocalBufferHandle { guard: self.guard }
@@ -1479,6 +1501,12 @@ impl private_traits::PostSendGuard for BasicPostSendGuard<'_> {
     fn setup_send_imm(&mut self, imm_data: u32) {
         self.wrs.last_mut().unwrap().opcode = WorkRequestOperationType::SendWithImmediate as _;
         self.wrs.last_mut().unwrap().imm_data_invalidated_rkey_union.imm_data = imm_data;
+    }
+
+    fn setup_ud_addr(&mut self, ah: &AddressHandle, remote_qpn: u32, remote_qkey: u32) {
+        self.wrs.last_mut().unwrap().wr.ud.ah = unsafe { ah.ah().as_ptr() };
+        self.wrs.last_mut().unwrap().wr.ud.remote_qpn = remote_qpn;
+        self.wrs.last_mut().unwrap().wr.ud.remote_qkey = remote_qkey;
     }
 
     fn setup_write(&mut self, rkey: u32, remote_addr: u64) {
@@ -1607,6 +1635,12 @@ impl private_traits::PostSendGuard for ExtendedPostSendGuard<'_> {
 
     fn setup_send_imm(&mut self, imm_data: u32) {
         unsafe { ibv_wr_send_imm(self.qp_ex.as_ptr(), imm_data) };
+    }
+
+    fn setup_ud_addr(&mut self, ah: &AddressHandle, remote_qpn: u32, remote_qkey: u32) {
+        unsafe {
+            ibv_wr_set_ud_addr(self.qp_ex.as_ptr(), ah.ah().as_ptr(), remote_qpn, remote_qkey);
+        }
     }
 
     fn setup_write(&mut self, rkey: u32, remote_addr: u64) {
@@ -1821,6 +1855,13 @@ impl private_traits::PostSendGuard for GenericPostSendGuard<'_> {
         match self {
             GenericPostSendGuard::Basic(guard) => guard.setup_send_imm(imm_data),
             GenericPostSendGuard::Extended(guard) => guard.setup_send_imm(imm_data),
+        }
+    }
+
+    fn setup_ud_addr(&mut self, ah: &AddressHandle, remote_qpn: u32, remote_qkey: u32) {
+        match self {
+            GenericPostSendGuard::Basic(guard) => guard.setup_ud_addr(ah, remote_qpn, remote_qkey),
+            GenericPostSendGuard::Extended(guard) => guard.setup_ud_addr(ah, remote_qpn, remote_qkey),
         }
     }
 
