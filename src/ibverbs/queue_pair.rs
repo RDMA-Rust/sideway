@@ -915,6 +915,10 @@ impl QueuePairBuilder {
 
         let qp = unsafe { ibv_create_qp_ex((*(attr.pd)).context, &mut attr) };
 
+        if qp.is_null() {
+            return Err(CreateQueuePairErrorKind::Ibverbs(io::Error::last_os_error()).into());
+        }
+
         Ok(ExtendedQueuePair {
             qp_ex: NonNull::new(unsafe { ibv_qp_to_qp_ex(qp) })
                 .ok_or::<CreateQueuePairError>(CreateQueuePairErrorKind::Ibverbs(io::Error::last_os_error()).into())?,
