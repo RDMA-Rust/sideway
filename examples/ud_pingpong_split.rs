@@ -10,7 +10,7 @@ use byte_unit::{Byte, UnitType};
 use clap::{Parser, ValueEnum};
 use postcard::{from_bytes, to_allocvec};
 use serde::{Deserialize, Serialize};
-use sideway::ibverbs::address::{AddressHandle, AddressHandleAttribute, Gid};
+use sideway::ibverbs::address::{AddressHandle, AddressHandleAttribute, Gid, GlobalRoutingHeader, GRH_HEADER_LEN};
 use sideway::ibverbs::completion::{
     CreateCompletionQueueWorkCompletionFlags, ExtendedCompletionQueue, ExtendedWorkCompletion, GenericCompletionQueue,
     WorkCompletionStatus,
@@ -62,6 +62,9 @@ pub struct Args {
     /// Get CQE with timestamp
     #[arg(long, short = 't', default_value_t = false)]
     ts: bool,
+    /// Print GRH on each received packet
+    #[arg(long, default_value_t = false)]
+    debug_grh: bool,
     /// If no value provided, start a server and wait for connection, otherwise, connect to server at [host]
     #[arg(name = "host")]
     server_ip: Option<String>,
@@ -134,7 +137,7 @@ impl PingPongContext {
             .context("Failed to register send MR")?
         };
 
-        let recv_buf = Arc::new(vec![0; size as usize + 40]);
+        let recv_buf = Arc::new(vec![0; size as usize + GRH_HEADER_LEN]);
         let recv_mr = unsafe {
             pd.reg_mr(
                 recv_buf.as_ptr() as usize,
@@ -202,7 +205,7 @@ impl PingPongContext {
             let mut guard = self.qp.start_post_recv();
             let lkey = self.recv_mr.lkey();
             let ptr = self.recv_mr.get_ptr() as u64;
-            let size = self.size + 40;
+            let size = self.size + GRH_HEADER_LEN as u32;
 
             let recv_handle = guard.construct_wr(RECV_WR_ID);
 
@@ -251,7 +254,7 @@ impl PingPongContext {
     fn parse_single_work_completion(
         &self, wc: &ExtendedWorkCompletion, ts_param: &mut TimeStamps, scnt: &mut u32, rcnt: &mut u32,
         outstanding_send: &mut bool, rout: &mut u32, rx_depth: u32, need_post_recv: &mut bool, to_post_recv: &mut u32,
-        use_ts: bool,
+        use_ts: bool, debug_grh: bool,
     ) {
         if wc.status() != WorkCompletionStatus::Success as u32 {
             panic!(
@@ -269,6 +272,36 @@ impl PingPongContext {
             RECV_WR_ID => {
                 *rcnt += 1;
                 *rout -= 1;
+
+                // Print GRH if debug mode is enabled
+                if debug_grh {
+                    let recv_buf = unsafe {
+                        std::slice::from_raw_parts(
+                            self.recv_mr.get_ptr() as *const u8,
+                            self.size as usize + GRH_HEADER_LEN,
+                        )
+                    };
+                    match GlobalRoutingHeader::new_checked(recv_buf) {
+                        Ok(grh) => {
+                            println!(
+                                "[recv #{}] GRH: version={}, traffic_class={:#04x}, flow_label={:#07x}, \
+                                 payload_len={}, next_hdr={:#04x}, hop_limit={}, src_gid={}, dst_gid={}",
+                                *rcnt,
+                                grh.version(),
+                                grh.traffic_class(),
+                                grh.flow_label(),
+                                grh.payload_length(),
+                                grh.next_header(),
+                                grh.hop_limit(),
+                                grh.source_gid(),
+                                grh.destination_gid()
+                            );
+                        },
+                        Err(e) => {
+                            eprintln!("[recv #{}] Failed to parse GRH: {}", *rcnt, e);
+                        },
+                    }
+                }
 
                 if *rout <= rx_depth / 2 {
                     *to_post_recv = rx_depth - *rout;
@@ -439,6 +472,7 @@ fn main() -> Result<()> {
                         &mut need_post_recv,
                         &mut to_post_recv,
                         args.ts,
+                        args.debug_grh,
                     );
 
                     if scnt < args.iter && !outstanding_send {
@@ -474,7 +508,9 @@ fn main() -> Result<()> {
         "{} bytes in {:.2} seconds = {:.2}/s",
         bytes,
         time.as_secs_f64(),
-        Byte::from_f64(bytes_per_second).unwrap().get_appropriate_unit(UnitType::Binary)
+        Byte::from_f64(bytes_per_second)
+            .unwrap()
+            .get_appropriate_unit(UnitType::Binary)
     );
     println!(
         "{} iters in {:.2} seconds = {:#.2?}/iter",
