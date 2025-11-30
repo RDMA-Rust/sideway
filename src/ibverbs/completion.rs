@@ -3,7 +3,7 @@ use std::num::NonZeroU32;
 use std::os::fd::{AsRawFd, RawFd};
 use std::os::raw::c_void;
 use std::ptr::NonNull;
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 use std::{io, ptr};
 use std::{marker::PhantomData, mem::MaybeUninit};
 
@@ -11,10 +11,11 @@ use bitmask_enum::bitmask;
 
 use super::device_context::DeviceContext;
 use rdma_mummy_sys::{
-    ibv_comp_channel, ibv_cq, ibv_cq_ex, ibv_cq_init_attr_ex, ibv_create_comp_channel, ibv_create_cq, ibv_create_cq_ex,
-    ibv_create_cq_wc_flags, ibv_destroy_comp_channel, ibv_destroy_cq, ibv_end_poll, ibv_next_poll, ibv_pd, ibv_poll_cq,
-    ibv_poll_cq_attr, ibv_start_poll, ibv_wc, ibv_wc_opcode, ibv_wc_read_byte_len, ibv_wc_read_completion_ts,
-    ibv_wc_read_imm_data, ibv_wc_read_opcode, ibv_wc_read_vendor_err, ibv_wc_status,
+    ibv_ack_cq_events, ibv_comp_channel, ibv_cq, ibv_cq_ex, ibv_cq_init_attr_ex, ibv_create_comp_channel,
+    ibv_create_cq, ibv_create_cq_ex, ibv_create_cq_wc_flags, ibv_destroy_comp_channel, ibv_destroy_cq, ibv_end_poll,
+    ibv_get_cq_event, ibv_next_poll, ibv_pd, ibv_poll_cq, ibv_poll_cq_attr, ibv_req_notify_cq, ibv_start_poll, ibv_wc,
+    ibv_wc_opcode, ibv_wc_read_byte_len, ibv_wc_read_completion_ts, ibv_wc_read_imm_data, ibv_wc_read_opcode,
+    ibv_wc_read_vendor_err, ibv_wc_status,
 };
 
 /// Error returned by [`DeviceContext::create_comp_channel`] for creating a new completion channel.
@@ -43,6 +44,34 @@ pub struct CreateCompletionQueueError(#[from] pub CreateCompletionQueueErrorKind
 #[error(transparent)]
 #[non_exhaustive]
 pub enum CreateCompletionQueueErrorKind {
+    Ibverbs(#[from] io::Error),
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("failed to get completion event")]
+#[non_exhaustive]
+pub struct GetCompletionEventError(#[from] pub GetCompletionEventErrorKind);
+
+/// The enum type for [`GetCompletionEventError`].
+#[derive(Debug, thiserror::Error)]
+#[error(transparent)]
+#[non_exhaustive]
+pub enum GetCompletionEventErrorKind {
+    Ibverbs(#[from] io::Error),
+}
+
+/// Error returned by [`CompletionChannel::req_notify_cq`] for requesting notification of completion queue.
+#[derive(Debug, thiserror::Error)]
+#[error("failed to request notification of completion queue")]
+#[non_exhaustive]
+pub struct RequestNotifyCompletionQueueError(#[from] pub RequestNotifyCompletionQueueErrorKind);
+
+/// The enum type for [`RequestNotifyCompletionQueueError`].
+
+#[derive(Debug, thiserror::Error)]
+#[error(transparent)]
+#[non_exhaustive]
+pub enum RequestNotifyCompletionQueueErrorKind {
     Ibverbs(#[from] io::Error),
 }
 
@@ -254,6 +283,22 @@ impl CompletionChannel {
         }
     }
 
+    pub fn get_cq_event(&self) -> Result<GenericCompletionQueue, GetCompletionEventError> {
+        let mut cq_ptr = MaybeUninit::<*mut ibv_cq>::uninit();
+        let mut cq_wrapper = MaybeUninit::<*mut WeakGenericCompletionQueue>::uninit();
+
+        let ret = unsafe { ibv_get_cq_event(self.channel.as_ptr(), cq_ptr.as_mut_ptr(), cq_wrapper.as_mut_ptr() as _) };
+        if ret < 0 {
+            return Err(GetCompletionEventErrorKind::Ibverbs(io::Error::last_os_error()).into());
+        }
+        let _cq = unsafe { NonNull::new(cq_ptr.assume_init()).unwrap() };
+        let cq_wrapper = unsafe { NonNull::new(cq_wrapper.assume_init()).unwrap() };
+
+        let weak_cq = unsafe { (*cq_wrapper.as_ptr()).upgrade() };
+
+        Ok(weak_cq.unwrap())
+    }
+
     /// # Safety
     ///
     /// Return the handle of completion channel.
@@ -281,6 +326,20 @@ pub trait CompletionQueue {
     /// We mark this method unsafe because the lifetime of `ibv_cq` is not
     /// associated with the return value.
     unsafe fn cq(&self) -> NonNull<ibv_cq>;
+
+    fn ack_events(&self, num_events: u32) {
+        unsafe { ibv_ack_cq_events(self.cq().as_ptr(), num_events) };
+    }
+
+    fn req_notify_cq(&self, solicited_only: bool) -> Result<(), RequestNotifyCompletionQueueError> {
+        let ret = unsafe { ibv_req_notify_cq(self.cq().as_ptr(), if solicited_only { 1 } else { 0 }) };
+
+        if ret != 0 {
+            return Err(RequestNotifyCompletionQueueErrorKind::Ibverbs(io::Error::from_raw_os_error(ret)).into());
+        }
+
+        Ok(())
+    }
 }
 
 /// The legacy [`CompletionQueue`] created with [`CompletionQueueBuilder::build`]
@@ -490,11 +549,21 @@ impl CompletionQueueBuilder {
         if cq_ex.is_null() {
             Err(CreateCompletionQueueErrorKind::Ibverbs(io::Error::last_os_error()).into())
         } else {
-            Ok(Arc::new(ExtendedCompletionQueue {
+            let cq_wrapper = Arc::new(ExtendedCompletionQueue {
                 cq_ex: unsafe { NonNull::new_unchecked(cq_ex) },
                 _dev_ctx: Arc::clone(&self.dev_ctx),
                 _comp_channel: self.comp_channel.clone(),
-            }))
+            });
+
+            let weak_cq = Arc::downgrade(&cq_wrapper.clone());
+            let boxed = Box::new(WeakGenericCompletionQueue::Extended(weak_cq));
+            let raw_box = Box::into_raw(boxed);
+
+            unsafe {
+                (*cq_ex).cq_context = raw_box as *mut std::ffi::c_void;
+            }
+
+            Ok(cq_wrapper)
         }
     }
 
@@ -516,12 +585,22 @@ impl CompletionQueueBuilder {
         if cq.is_null() {
             Err(CreateCompletionQueueErrorKind::Ibverbs(io::Error::last_os_error()).into())
         } else {
-            Ok(Arc::new(BasicCompletionQueue {
+            let cq_wrapper = Arc::new(BasicCompletionQueue {
                 cq: unsafe { NonNull::new_unchecked(cq) },
                 poll_batch: unsafe { NonZeroU32::new(32).unwrap_unchecked() },
                 _dev_ctx: Arc::clone(&self.dev_ctx),
                 _comp_channel: self.comp_channel.clone(),
-            }))
+            });
+
+            let weak_cq = Arc::downgrade(&cq_wrapper.clone());
+            let boxed = Box::new(WeakGenericCompletionQueue::Basic(weak_cq));
+            let raw_box = Box::into_raw(boxed);
+
+            unsafe {
+                (*cq).cq_context = raw_box as *mut std::ffi::c_void;
+            }
+
+            Ok(cq_wrapper)
         }
     }
 }
@@ -746,6 +825,20 @@ impl<'cq> Iterator for ExtendedPoller<'cq> {
     }
 }
 
+enum WeakGenericCompletionQueue {
+    Basic(Weak<BasicCompletionQueue>),
+    Extended(Weak<ExtendedCompletionQueue>),
+}
+
+impl WeakGenericCompletionQueue {
+    pub fn upgrade(&self) -> Option<GenericCompletionQueue> {
+        match self {
+            WeakGenericCompletionQueue::Basic(cq) => cq.upgrade().map(GenericCompletionQueue::Basic),
+            WeakGenericCompletionQueue::Extended(cq) => cq.upgrade().map(GenericCompletionQueue::Extended),
+        }
+    }
+}
+
 /// A unified interface for [`BasicCompletionQueue`] and [`ExtendedCompletionQueue`], implemented
 /// with enum dispatching.
 #[derive(Debug)]
@@ -786,6 +879,20 @@ impl GenericCompletionQueue {
         match self {
             GenericCompletionQueue::Basic(cq) => cq.start_poll().map(GenericPoller::Basic),
             GenericCompletionQueue::Extended(cq) => cq.start_poll().map(GenericPoller::Extended),
+        }
+    }
+
+    pub fn ack_events(&self, num_events: u32) {
+        match self {
+            GenericCompletionQueue::Basic(cq) => cq.ack_events(num_events),
+            GenericCompletionQueue::Extended(cq) => cq.ack_events(num_events),
+        }
+    }
+
+    pub fn req_notify_cq(&self, solicited_only: bool) -> Result<(), RequestNotifyCompletionQueueError> {
+        match self {
+            GenericCompletionQueue::Basic(cq) => cq.req_notify_cq(solicited_only),
+            GenericCompletionQueue::Extended(cq) => cq.req_notify_cq(solicited_only),
         }
     }
 }
