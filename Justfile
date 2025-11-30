@@ -20,6 +20,11 @@ test-rc-pingpong-with-cov:
     sleep 2
     cargo llvm-cov --no-report run --example rc_pingpong_split -- -d {{rdma_dev}} -g 1 127.0.0.1
 
+test-rc-pingpong-with-events-with-cov:
+    cargo llvm-cov --no-report run --example rc_pingpong_split -- -d {{rdma_dev}} -g 1 -e &
+    sleep 2
+    cargo llvm-cov --no-report run --example rc_pingpong_split -- -d {{rdma_dev}} -g 1 -e 127.0.0.1
+
 test-cmtime-with-cov:
     cargo llvm-cov --no-report run --example cmtime -- -b {{ip}} &
     sleep 2

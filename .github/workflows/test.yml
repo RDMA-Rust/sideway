@@ -72,6 +72,7 @@ jobs:
           fi
           just test-basic-with-cov
           just test-rc-pingpong-with-cov
+          just test-rc-pingpong-with-events-with-cov
           just test-cmtime-with-cov
           just generate-cov
       - name: Upload coverage information
