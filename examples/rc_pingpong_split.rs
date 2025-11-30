@@ -32,8 +32,8 @@ use postcard::{from_bytes, to_allocvec};
 use serde::{Deserialize, Serialize};
 use sideway::ibverbs::address::{AddressHandleAttribute, Gid};
 use sideway::ibverbs::completion::{
-    CreateCompletionQueueWorkCompletionFlags, ExtendedCompletionQueue, ExtendedWorkCompletion, GenericCompletionQueue,
-    WorkCompletionStatus,
+    CompletionChannel, CreateCompletionQueueWorkCompletionFlags, ExtendedCompletionQueue, ExtendedWorkCompletion,
+    GenericCompletionQueue, PollCompletionQueueError, WorkCompletionStatus,
 };
 use sideway::ibverbs::device::{Device, DeviceInfo, DeviceList};
 use sideway::ibverbs::device_context::{DeviceContext, Mtu};
@@ -83,6 +83,9 @@ pub struct Args {
     /// Get CQE with timestamp
     #[arg(long, short = 't', default_value_t = false)]
     ts: bool,
+    /// Use CQ events instead of busy polling
+    #[arg(long, short = 'e', default_value_t = false)]
+    use_events: bool,
     /// If no value provided, start a server and wait for connection, otherwise, connect to server at [host]
     #[arg(name = "host")]
     server_ip: Option<String>,
@@ -121,13 +124,17 @@ struct PingPongContext {
     _recv_buf: Arc<Vec<u8>>,
     recv_mr: Arc<MemoryRegion>,
     cq: Arc<ExtendedCompletionQueue>,
+    cq_handle: GenericCompletionQueue,
+    comp_channel: Option<Arc<CompletionChannel>>,
     qp: ExtendedQueuePair,
     size: u32,
     completion_timestamp_mask: u64,
 }
 
 impl PingPongContext {
-    fn build(device: &Device, size: u32, rx_depth: u32, ib_port: u8, use_ts: bool) -> anyhow::Result<PingPongContext> {
+    fn build(
+        device: &Device, size: u32, rx_depth: u32, ib_port: u8, use_ts: bool, use_events: bool,
+    ) -> anyhow::Result<PingPongContext> {
         let context: Arc<DeviceContext> = device
             .open()
             .unwrap_or_else(|_| panic!("Couldn't get context for {}", device.name()));
@@ -141,6 +148,13 @@ impl PingPongContext {
             }
         } else {
             0
+        };
+
+        // Create completion channel if using events
+        let comp_channel = if use_events {
+            Some(CompletionChannel::new(&context).expect("Couldn't create completion channel"))
+        } else {
+            None
         };
 
         let pd = context.alloc_pd().unwrap_or_else(|_| panic!("Couldn't allocate PD"));
@@ -172,16 +186,27 @@ impl PingPongContext {
                     | CreateCompletionQueueWorkCompletionFlags::CompletionTimestamp,
             );
         }
+        // Associate completion channel with CQ if using events
+        if let Some(ref channel) = comp_channel {
+            cq_builder.setup_comp_channel(channel, 0);
+        }
         let cq = cq_builder.setup_cqe(rx_depth + 1).build_ex().unwrap();
 
-        let cq_for_qp = GenericCompletionQueue::from(Arc::clone(&cq));
+        let cq_handle = GenericCompletionQueue::from(Arc::clone(&cq));
+
+        // Request initial notification if using events
+        if use_events {
+            cq_handle
+                .req_notify_cq(false)
+                .expect("Couldn't request CQ notification");
+        }
 
         let mut builder = pd.create_qp_builder();
 
         let mut qp = builder
             .setup_max_inline_data(128)
-            .setup_send_cq(cq_for_qp.clone())
-            .setup_recv_cq(cq_for_qp)
+            .setup_send_cq(cq_handle.clone())
+            .setup_recv_cq(cq_handle.clone())
             .setup_max_send_wr(1)
             .setup_max_recv_wr(rx_depth)
             .build_ex()
@@ -202,6 +227,8 @@ impl PingPongContext {
             _recv_buf: recv_buf,
             recv_mr,
             cq,
+            cq_handle,
+            comp_channel,
             qp,
             size,
             completion_timestamp_mask,
@@ -377,7 +404,7 @@ fn main() -> anyhow::Result<()> {
         None => device_list.iter().next().expect("No IB device found"),
     };
 
-    let mut ctx = PingPongContext::build(&device, args.size, rx_depth, args.ib_port, args.ts)?;
+    let mut ctx = PingPongContext::build(&device, args.size, rx_depth, args.ib_port, args.ts, args.use_events)?;
 
     let gid = ctx.ctx.query_gid(args.ib_port, args.gid_idx.into()).unwrap();
     let psn = rand::random::<u32>() & 0xFFFFFF;
@@ -450,56 +477,79 @@ fn main() -> anyhow::Result<()> {
         outstanding_send = true;
     }
     // poll for the completion
-    {
-        loop {
-            let mut need_post_recv = false;
-            let mut to_post_recv = 0;
-            let mut need_post_send = false;
+    let mut num_cq_events: u32 = 0;
+    loop {
+        let mut need_post_recv = false;
+        let mut to_post_recv = 0;
+        let mut need_post_send = false;
 
-            {
-                match ctx.cq.start_poll() {
-                    Ok(mut poller) => {
-                        while let Some(wc) = poller.next() {
-                            ctx.parse_single_work_completion(
-                                &wc,
-                                &mut ts_param,
-                                &mut scnt,
-                                &mut rcnt,
-                                &mut outstanding_send,
-                                &mut rout,
-                                rx_depth,
-                                &mut need_post_recv,
-                                &mut to_post_recv,
-                                args.ts,
-                            );
+        // If using events, wait for CQ event before polling
+        if args.use_events {
+            if let Some(ref channel) = ctx.comp_channel {
+                // Get the CQ event (this blocks until an event arrives)
+                let _event_cq = channel.get_cq_event().expect("Failed to get CQ event");
+                num_cq_events += 1;
 
-                            // Record that we need to post a send later
-                            if scnt < args.iter && !outstanding_send {
-                                need_post_send = true;
-                                outstanding_send = true;
-                            }
-                        }
-                    },
-                    Err(_) => {
-                        continue;
-                    },
-                }
-            }
-
-            if need_post_recv {
-                ctx.post_recv(to_post_recv).unwrap();
-                rout += to_post_recv;
-            }
-
-            if need_post_send {
-                ctx.post_send()?;
-            }
-
-            // Check if we're done
-            if scnt >= args.iter && rcnt >= args.iter {
-                break;
+                // Re-arm the notification BEFORE polling to avoid missing events
+                ctx.cq_handle
+                    .req_notify_cq(false)
+                    .expect("Couldn't request CQ notification");
             }
         }
+
+        // Poll for completions
+        match ctx.cq.start_poll() {
+            Ok(mut poller) => {
+                while let Some(wc) = poller.next() {
+                    ctx.parse_single_work_completion(
+                        &wc,
+                        &mut ts_param,
+                        &mut scnt,
+                        &mut rcnt,
+                        &mut outstanding_send,
+                        &mut rout,
+                        rx_depth,
+                        &mut need_post_recv,
+                        &mut to_post_recv,
+                        args.ts,
+                    );
+
+                    // Record that we need to post a send later
+                    if scnt < args.iter && !outstanding_send {
+                        need_post_send = true;
+                        outstanding_send = true;
+                    }
+                }
+            },
+            Err(PollCompletionQueueError::CompletionQueueEmpty) => {
+                // CQ is empty - if not using events, continue busy polling
+                if !args.use_events {
+                    continue;
+                }
+            },
+            Err(e) => {
+                panic!("Failed to poll CQ: {:?}", e);
+            },
+        }
+
+        if need_post_recv {
+            ctx.post_recv(to_post_recv).unwrap();
+            rout += to_post_recv;
+        }
+
+        if need_post_send {
+            ctx.post_send()?;
+        }
+
+        // Check if we're done
+        if scnt >= args.iter && rcnt >= args.iter {
+            break;
+        }
+    }
+
+    // Acknowledge all CQ events before cleanup
+    if num_cq_events > 0 {
+        ctx.cq_handle.ack_events(num_cq_events);
     }
 
     let end_time = clock.now();
