@@ -31,7 +31,7 @@ fn main(#[case] use_qp_ex: bool, #[case] use_cq_ex: bool) -> Result<(), Box<dyn 
         let pd = ctx.alloc_pd().unwrap();
         let send_data: Vec<u8> = vec![0; 64];
         let mut recv_data: Vec<u8> = vec![0; 64];
-        let mr = unsafe {
+        let send_mr = unsafe {
             pd.reg_mr(
                 send_data.as_ptr() as _,
                 send_data.len(),
@@ -151,7 +151,7 @@ fn main(#[case] use_qp_ex: bool, #[case] use_cq_ex: bool) -> Result<(), Box<dyn 
 
         let write_handle = guard
             .construct_wr(233, WorkRequestFlags::Signaled | WorkRequestFlags::Inline)
-            .setup_write(mr.rkey(), send_data.as_ptr() as _);
+            .setup_write(send_mr.rkey(), send_data.as_ptr() as _);
 
         write_handle.setup_inline_data(&buf);
 
@@ -163,7 +163,7 @@ fn main(#[case] use_qp_ex: bool, #[case] use_cq_ex: bool) -> Result<(), Box<dyn 
         let write_handle = unsafe {
             guard
                 .construct_wr(234, WorkRequestFlags::Signaled | WorkRequestFlags::Inline)
-                .setup_write(mr.rkey(), send_data.as_ptr().byte_add(4) as _)
+                .setup_write(send_mr.rkey(), send_data.as_ptr().byte_add(4) as _)
         };
 
         write_handle.setup_inline_data_list(&[IoSlice::new(buf[0].as_ref()), IoSlice::new(buf[1].as_ref())]);
@@ -190,7 +190,7 @@ fn main(#[case] use_qp_ex: bool, #[case] use_cq_ex: bool) -> Result<(), Box<dyn 
         }
 
         unsafe {
-            let slice = std::slice::from_raw_parts(mr.get_ptr() as *const u8, mr.region_len());
+            let slice = std::slice::from_raw_parts(send_mr.get_ptr() as *const u8, send_mr.region_len());
             println!("Buffer contents: {slice:?}");
         }
 
@@ -229,7 +229,7 @@ fn main(#[case] use_qp_ex: bool, #[case] use_cq_ex: bool) -> Result<(), Box<dyn 
         let write_handle = unsafe {
             guard
                 .construct_wr(234, WorkRequestFlags::Signaled | WorkRequestFlags::Inline)
-                .setup_write_imm(mr.rkey(), send_data.as_ptr().byte_add(4) as _, 18515)
+                .setup_write_imm(send_mr.rkey(), send_data.as_ptr().byte_add(4) as _, 18515)
         };
 
         write_handle.setup_inline_data_list(&[
@@ -254,7 +254,7 @@ fn main(#[case] use_qp_ex: bool, #[case] use_cq_ex: bool) -> Result<(), Box<dyn 
         }
 
         unsafe {
-            let slice = std::slice::from_raw_parts(mr.get_ptr() as *const u8, mr.region_len());
+            let slice = std::slice::from_raw_parts(send_mr.get_ptr() as *const u8, send_mr.region_len());
             println!("Buffer contents: {slice:?}");
         }
 
