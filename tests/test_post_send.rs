@@ -195,7 +195,7 @@ fn main(#[case] use_qp_ex: bool, #[case] use_cq_ex: bool) -> Result<(), Box<dyn 
 
         // poll recv CQ for the completion
         {
-            for wc in sq.iter().unwrap() {
+            for wc in rq.iter().unwrap() {
                 println!("wr_id {}, status: {}, opcode: {}", wc.wr_id(), wc.status(), wc.opcode())
             }
         }
@@ -257,7 +257,7 @@ fn main(#[case] use_qp_ex: bool, #[case] use_cq_ex: bool) -> Result<(), Box<dyn 
 
         // poll recv CQ for the completion
         {
-            for wc in sq.iter().unwrap() {
+            for wc in rq.iter().unwrap() {
                 println!(
                     "wr_id {}, status: {}, opcode: {}, imm_data: {}",
                     wc.wr_id(),
