@@ -183,8 +183,7 @@ fn main(#[case] use_qp_ex: bool, #[case] use_cq_ex: bool) -> Result<(), Box<dyn 
 
         // poll send CQ for the completion
         {
-            let mut poller = sq.start_poll().unwrap();
-            while let Some(wc) = poller.next() {
+            for wc in sq.iter().unwrap() {
                 println!("wr_id {}, status: {}, opcode: {}", wc.wr_id(), wc.status(), wc.opcode());
             }
         }
@@ -196,8 +195,7 @@ fn main(#[case] use_qp_ex: bool, #[case] use_cq_ex: bool) -> Result<(), Box<dyn 
 
         // poll recv CQ for the completion
         {
-            let mut poller = rq.start_poll().unwrap();
-            while let Some(wc) = poller.next() {
+            for wc in sq.iter().unwrap() {
                 println!("wr_id {}, status: {}, opcode: {}", wc.wr_id(), wc.status(), wc.opcode())
             }
         }
@@ -247,8 +245,7 @@ fn main(#[case] use_qp_ex: bool, #[case] use_cq_ex: bool) -> Result<(), Box<dyn 
 
         // poll send CQ for the completion
         {
-            let mut poller = sq.start_poll().unwrap();
-            while let Some(wc) = poller.next() {
+            for wc in sq.iter().unwrap() {
                 println!("wr_id {}, status: {}, opcode: {}", wc.wr_id(), wc.status(), wc.opcode())
             }
         }
@@ -260,8 +257,7 @@ fn main(#[case] use_qp_ex: bool, #[case] use_cq_ex: bool) -> Result<(), Box<dyn 
 
         // poll recv CQ for the completion
         {
-            let mut poller = rq.start_poll().unwrap();
-            while let Some(wc) = poller.next() {
+            for wc in sq.iter().unwrap() {
                 println!(
                     "wr_id {}, status: {}, opcode: {}, imm_data: {}",
                     wc.wr_id(),

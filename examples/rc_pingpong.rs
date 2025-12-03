@@ -326,89 +326,76 @@ fn main() -> anyhow::Result<()> {
     // poll for the completion
     {
         loop {
-            match cq.start_poll() {
-                Ok(mut poller) => {
-                    while let Some(wc) = poller.next() {
-                        if wc.status() != WorkCompletionStatus::Success as u32 {
-                            panic!(
-                                "Failed status {:#?} ({}) for wr_id {}",
-                                Into::<WorkCompletionStatus>::into(wc.status()),
-                                wc.status(),
-                                wc.wr_id()
-                            );
-                        }
-                        match wc.wr_id() {
-                            SEND_WR_ID => {
-                                scnt += 1;
-                                outstanding_send = false;
-                            },
-                            RECV_WR_ID => {
-                                rcnt += 1;
-                                rout -= 1;
+            for wc in cq.iter()? {
+                if wc.status() != WorkCompletionStatus::Success as u32 {
+                    panic!(
+                        "Failed status {:#?} ({}) for wr_id {}",
+                        Into::<WorkCompletionStatus>::into(wc.status()),
+                        wc.status(),
+                        wc.wr_id()
+                    );
+                }
+                match wc.wr_id() {
+                    SEND_WR_ID => {
+                        scnt += 1;
+                        outstanding_send = false;
+                    },
+                    RECV_WR_ID => {
+                        rcnt += 1;
+                        rout -= 1;
 
-                                // Post more receives if the receive side credit is low
-                                if rout <= rx_depth / 2 {
-                                    let to_post = rx_depth - rout;
-                                    for _ in 0..to_post {
-                                        let mut guard = qp.start_post_recv();
-                                        let recv_handle = guard.construct_wr(RECV_WR_ID);
-                                        unsafe {
-                                            recv_handle.setup_sge(
-                                                recv_mr.lkey(),
-                                                recv_data.as_mut_ptr() as _,
-                                                args.size,
-                                            );
-                                        };
-                                        guard.post().unwrap();
-                                    }
-                                    rout += to_post;
-                                }
-
-                                if args.ts {
-                                    let timestamp = wc.completion_timestamp();
-                                    if ts_param.last_completion_with_timestamp != 0 {
-                                        let delta: u64 = if timestamp >= ts_param.completion_recv_prev_time {
-                                            timestamp - ts_param.completion_recv_prev_time
-                                        } else {
-                                            completion_timestamp_mask - ts_param.completion_recv_prev_time
-                                                + timestamp
-                                                + 1
-                                        };
-
-                                        ts_param.completion_recv_max_time_delta =
-                                            ts_param.completion_recv_max_time_delta.max(delta);
-                                        ts_param.completion_recv_min_time_delta =
-                                            ts_param.completion_recv_min_time_delta.min(delta);
-                                        ts_param.completion_recv_total_time_delta += delta;
-                                        ts_param.completion_with_time_iters += 1;
-                                    }
-
-                                    ts_param.completion_recv_prev_time = timestamp;
-                                    ts_param.last_completion_with_timestamp = 1;
-                                } else {
-                                    ts_param.last_completion_with_timestamp = 0;
-                                }
-                            },
-                            _ => {
-                                panic!("Unknown error!");
-                            },
-                        }
-
-                        if scnt < args.iter && !outstanding_send {
-                            // Post another send if we haven't reached the iteration limit
-                            let mut guard = qp.start_post_send();
-                            let send_handle = guard.construct_wr(SEND_WR_ID, WorkRequestFlags::Signaled).setup_send();
-                            unsafe {
-                                send_handle.setup_sge(send_mr.lkey(), send_data.as_ptr() as _, args.size);
+                        // Post more receives if the receive side credit is low
+                        if rout <= rx_depth / 2 {
+                            let to_post = rx_depth - rout;
+                            for _ in 0..to_post {
+                                let mut guard = qp.start_post_recv();
+                                let recv_handle = guard.construct_wr(RECV_WR_ID);
+                                unsafe {
+                                    recv_handle.setup_sge(recv_mr.lkey(), recv_data.as_mut_ptr() as _, args.size);
+                                };
+                                guard.post().unwrap();
                             }
-                            guard.post()?;
-                            outstanding_send = true;
+                            rout += to_post;
                         }
+
+                        if args.ts {
+                            let timestamp = wc.completion_timestamp();
+                            if ts_param.last_completion_with_timestamp != 0 {
+                                let delta: u64 = if timestamp >= ts_param.completion_recv_prev_time {
+                                    timestamp - ts_param.completion_recv_prev_time
+                                } else {
+                                    completion_timestamp_mask - ts_param.completion_recv_prev_time + timestamp + 1
+                                };
+
+                                ts_param.completion_recv_max_time_delta =
+                                    ts_param.completion_recv_max_time_delta.max(delta);
+                                ts_param.completion_recv_min_time_delta =
+                                    ts_param.completion_recv_min_time_delta.min(delta);
+                                ts_param.completion_recv_total_time_delta += delta;
+                                ts_param.completion_with_time_iters += 1;
+                            }
+
+                            ts_param.completion_recv_prev_time = timestamp;
+                            ts_param.last_completion_with_timestamp = 1;
+                        } else {
+                            ts_param.last_completion_with_timestamp = 0;
+                        }
+                    },
+                    _ => {
+                        panic!("Unknown error!");
+                    },
+                }
+
+                if scnt < args.iter && !outstanding_send {
+                    // Post another send if we haven't reached the iteration limit
+                    let mut guard = qp.start_post_send();
+                    let send_handle = guard.construct_wr(SEND_WR_ID, WorkRequestFlags::Signaled).setup_send();
+                    unsafe {
+                        send_handle.setup_sge(send_mr.lkey(), send_data.as_ptr() as _, args.size);
                     }
-                },
-                Err(_) => {
-                    continue;
-                },
+                    guard.post()?;
+                    outstanding_send = true;
+                }
             }
 
             // Check if we're done

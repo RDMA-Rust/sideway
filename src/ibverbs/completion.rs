@@ -53,8 +53,6 @@ pub enum CreateCompletionQueueErrorKind {
 pub enum PollCompletionQueueError {
     #[error("poll completion queue failed")]
     Ibverbs(#[from] io::Error),
-    #[error("completion queue is empty")]
-    CompletionQueueEmpty,
 }
 
 /// Possible statuses of a Work Completion's corresponding operation.
@@ -326,37 +324,8 @@ impl BasicCompletionQueue {
     ///
     /// [`ibv_poll_cq`]: https://www.rdmamojo.com/2013/02/15/ibv_poll_cq/
     ///
-    pub fn start_poll(&self) -> Result<BasicPoller<'_>, PollCompletionQueueError> {
-        let mut cqes = Vec::<ibv_wc>::with_capacity(self.poll_batch.get() as _);
-
-        let ret = unsafe {
-            ibv_poll_cq(
-                self.cq.as_ptr(),
-                self.poll_batch.get().try_into().unwrap(),
-                cqes.as_mut_ptr(),
-            )
-        };
-
-        unsafe {
-            match ret {
-                0 => Err(PollCompletionQueueError::CompletionQueueEmpty),
-                err if err < 0 => Err(PollCompletionQueueError::Ibverbs(io::Error::from_raw_os_error(-err))),
-                res => Ok(BasicPoller {
-                    cq: self.cq(),
-                    wcs: {
-                        cqes.set_len(res as _);
-                        cqes
-                    },
-                    status: if res < self.poll_batch.get().try_into().unwrap_unchecked() {
-                        BasicCompletionQueueState::Drained
-                    } else {
-                        BasicCompletionQueueState::Ready
-                    },
-                    current: 0,
-                    _phantom: PhantomData,
-                }),
-            }
-        }
+    pub fn iter(&self) -> Result<BasicCompletionQueueIter<'_>, PollCompletionQueueError> {
+        BasicCompletionQueueIter::new(self.cq, self.poll_batch.get().try_into().unwrap())
     }
 
     /// Change the polling batch size, note that this won't take effect until your next call to
@@ -401,23 +370,8 @@ impl CompletionQueue for ExtendedCompletionQueue {
 impl ExtendedCompletionQueue {
     /// Starts to poll Work Completions over this CQ, every [`ExtendedCompletionQueue`] should hold
     /// only one [`ExtendedPoller`] at the same time.
-    pub fn start_poll(&self) -> Result<ExtendedPoller<'_>, PollCompletionQueueError> {
-        let ret = unsafe {
-            ibv_start_poll(
-                self.cq_ex.as_ptr(),
-                MaybeUninit::<ibv_poll_cq_attr>::zeroed().as_mut_ptr(),
-            )
-        };
-
-        match ret {
-            0 => Ok(ExtendedPoller {
-                cq: self.cq_ex,
-                is_first: true,
-                _phantom: PhantomData,
-            }),
-            libc::ENOENT => Err(PollCompletionQueueError::CompletionQueueEmpty),
-            err => Err(PollCompletionQueueError::Ibverbs(io::Error::from_raw_os_error(err))),
-        }
+    pub fn iter(&self) -> Result<ExtendedCompletionQueueIter<'_>, PollCompletionQueueError> {
+        ExtendedCompletionQueueIter::new(self.cq_ex)
     }
 }
 
@@ -635,33 +589,69 @@ enum BasicCompletionQueueState {
 // TODO: provide a trait for poller?
 /// The basic `Poller` that works for [`BasicCompletionQueue`] for getting Work Completions in an
 /// iterator style.
-pub struct BasicPoller<'cq> {
+pub struct BasicCompletionQueueIter<'cq> {
     cq: NonNull<ibv_cq>,
     wcs: Vec<ibv_wc>,
     status: BasicCompletionQueueState,
-    current: usize,
+    next: usize,
     _phantom: PhantomData<&'cq ()>,
 }
 
+impl<'cq> BasicCompletionQueueIter<'cq> {
+    pub fn new(cq: NonNull<ibv_cq>, num_entries: i32) -> Result<Self, PollCompletionQueueError> {
+        let mut cqes = Vec::<ibv_wc>::with_capacity(num_entries as _);
+
+        let ret = unsafe { ibv_poll_cq(cq.as_ptr(), num_entries, cqes.as_mut_ptr()) };
+
+        match ret {
+            err if err < 0 => Err(PollCompletionQueueError::Ibverbs(io::Error::from_raw_os_error(-err))),
+            0 => Ok(Self {
+                cq,
+                wcs: Vec::new(),
+                status: BasicCompletionQueueState::Empty,
+                next: 0,
+                _phantom: PhantomData,
+            }),
+            res => Ok(Self {
+                cq,
+                wcs: {
+                    // SAFETY: ibv_poll_cq returns the number of valid work completions
+                    unsafe { cqes.set_len(res as _) };
+                    cqes
+                },
+                status: if res < num_entries {
+                    BasicCompletionQueueState::Drained
+                } else {
+                    BasicCompletionQueueState::Ready
+                },
+                next: 0,
+                _phantom: PhantomData,
+            }),
+        }
+    }
+}
+
 // TODO: implement BasicPoller with lending iterator for better performance.
-impl<'cq> Iterator for BasicPoller<'cq> {
+impl<'cq> Iterator for BasicCompletionQueueIter<'cq> {
     type Item = BasicWorkCompletion<'cq>;
 
     fn next(&mut self) -> Option<Self::Item> {
         use BasicCompletionQueueState::*;
 
-        let current = self.current;
+        if self.status == Empty {
+            return None;
+        }
+
+        let current = self.next;
         let len = self.wcs.len();
 
         if (self.status == Ready || self.status == Drained) && current < len {
-            let wc = unsafe {
-                BasicWorkCompletion {
-                    wc: *self.wcs.get_unchecked(current),
-                    _phantom: PhantomData,
-                }
-            };
-            self.current += 1;
-            return Some(wc);
+            self.next += 1;
+            return Some(BasicWorkCompletion {
+                // SAFETY: current < len, so index current is valid
+                wc: unsafe { *self.wcs.get_unchecked(current) },
+                _phantom: PhantomData,
+            });
         }
 
         if self.status == Drained && current >= len {
@@ -682,66 +672,97 @@ impl<'cq> Iterator for BasicPoller<'cq> {
             )
         };
 
-        if ret > 0 {
-            unsafe {
-                if ret < self.wcs.capacity().try_into().unwrap_unchecked() {
+        match ret {
+            res if res > 0 => {
+                // SAFETY: the capacity is previously checked to be convertable to i32
+                if ret < unsafe { self.wcs.capacity().try_into().unwrap_unchecked() } {
                     self.status = Drained;
                 } else {
                     self.status = Ready;
                 }
 
-                self.wcs.set_len(ret as usize);
-            }
-            let wc = unsafe {
-                BasicWorkCompletion {
-                    wc: *self.wcs.get_unchecked(0),
+                // SAFETY: ibv_poll_cq returns the number of valid work completions
+                unsafe { self.wcs.set_len(ret as usize) };
+                self.next = 1;
+                Some(BasicWorkCompletion {
+                    // SAFETY: ret > 0, so index 0 is valid
+                    wc: unsafe { *self.wcs.get_unchecked(0) },
                     _phantom: PhantomData,
-                }
-            };
-            self.current = 1;
-            Some(wc)
-        } else {
-            self.status = Empty;
-            None
+                })
+            },
+            0 => {
+                self.status = Empty;
+                None
+            },
+            _ => {
+                unreachable!()
+            },
         }
     }
 }
 
 /// The extended `Poller` that works for [`ExtendedCompletionQueue`] for getting Work Completions in
 /// an iterator style.
-pub struct ExtendedPoller<'cq> {
+pub struct ExtendedCompletionQueueIter<'cq> {
     cq: NonNull<ibv_cq_ex>,
     is_first: bool,
+    is_done: bool,
     _phantom: PhantomData<&'cq ()>,
 }
 
-impl Drop for ExtendedPoller<'_> {
+impl<'cq> ExtendedCompletionQueueIter<'cq> {
+    pub fn new(cq: NonNull<ibv_cq_ex>) -> Result<Self, PollCompletionQueueError> {
+        let ret = unsafe { ibv_start_poll(cq.as_ptr(), MaybeUninit::<ibv_poll_cq_attr>::zeroed().as_mut_ptr()) };
+        match ret {
+            0 => Ok(Self {
+                cq,
+                is_first: true,
+                is_done: false,
+                _phantom: PhantomData,
+            }),
+            libc::ENOENT => Ok(Self {
+                cq,
+                is_first: false,
+                is_done: true,
+                _phantom: PhantomData,
+            }),
+            err => Err(PollCompletionQueueError::Ibverbs(io::Error::from_raw_os_error(err))),
+        }
+    }
+}
+
+impl Drop for ExtendedCompletionQueueIter<'_> {
     fn drop(&mut self) {
+        if self.is_done {
+            return;
+        }
         unsafe { ibv_end_poll(self.cq.as_ptr()) }
     }
 }
 
-impl<'cq> Iterator for ExtendedPoller<'cq> {
+impl<'cq> Iterator for ExtendedCompletionQueueIter<'cq> {
     type Item = ExtendedWorkCompletion<'cq>;
 
     fn next(&mut self) -> Option<Self::Item> {
+        if self.is_done {
+            return None;
+        }
         if self.is_first {
             self.is_first = false;
+            return Some(ExtendedWorkCompletion {
+                cq: self.cq,
+                _phantom: PhantomData,
+            });
+        }
+
+        let ret = unsafe { ibv_next_poll(self.cq.as_ptr()) };
+        if ret != 0 {
+            None
+        } else {
             Some(ExtendedWorkCompletion {
                 cq: self.cq,
                 _phantom: PhantomData,
             })
-        } else {
-            let ret = unsafe { ibv_next_poll(self.cq.as_ptr()) };
-
-            if ret != 0 {
-                None
-            } else {
-                Some(ExtendedWorkCompletion {
-                    cq: self.cq,
-                    _phantom: PhantomData,
-                })
-            }
         }
     }
 }
@@ -777,15 +798,15 @@ impl CompletionQueue for GenericCompletionQueue {
 /// A unified interface for [`BasicPoller`] and [`ExtendedPoller`], implemented with enum
 /// dispatching.
 pub enum GenericPoller<'cq> {
-    Basic(BasicPoller<'cq>),
-    Extended(ExtendedPoller<'cq>),
+    Basic(BasicCompletionQueueIter<'cq>),
+    Extended(ExtendedCompletionQueueIter<'cq>),
 }
 
 impl GenericCompletionQueue {
-    pub fn start_poll(&self) -> Result<GenericPoller<'_>, PollCompletionQueueError> {
+    pub fn iter(&self) -> Result<GenericPoller<'_>, PollCompletionQueueError> {
         match self {
-            GenericCompletionQueue::Basic(cq) => cq.start_poll().map(GenericPoller::Basic),
-            GenericCompletionQueue::Extended(cq) => cq.start_poll().map(GenericPoller::Extended),
+            GenericCompletionQueue::Basic(cq) => cq.iter().map(GenericPoller::Basic),
+            GenericCompletionQueue::Extended(cq) => cq.iter().map(GenericPoller::Extended),
         }
     }
 }

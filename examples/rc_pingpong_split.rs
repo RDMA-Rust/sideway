@@ -457,32 +457,25 @@ fn main() -> anyhow::Result<()> {
             let mut need_post_send = false;
 
             {
-                match ctx.cq.start_poll() {
-                    Ok(mut poller) => {
-                        while let Some(wc) = poller.next() {
-                            ctx.parse_single_work_completion(
-                                &wc,
-                                &mut ts_param,
-                                &mut scnt,
-                                &mut rcnt,
-                                &mut outstanding_send,
-                                &mut rout,
-                                rx_depth,
-                                &mut need_post_recv,
-                                &mut to_post_recv,
-                                args.ts,
-                            );
+                for wc in ctx.cq.iter()? {
+                    ctx.parse_single_work_completion(
+                        &wc,
+                        &mut ts_param,
+                        &mut scnt,
+                        &mut rcnt,
+                        &mut outstanding_send,
+                        &mut rout,
+                        rx_depth,
+                        &mut need_post_recv,
+                        &mut to_post_recv,
+                        args.ts,
+                    );
 
-                            // Record that we need to post a send later
-                            if scnt < args.iter && !outstanding_send {
-                                need_post_send = true;
-                                outstanding_send = true;
-                            }
-                        }
-                    },
-                    Err(_) => {
-                        continue;
-                    },
+                    // Record that we need to post a send later
+                    if scnt < args.iter && !outstanding_send {
+                        need_post_send = true;
+                        outstanding_send = true;
+                    }
                 }
             }
 
