@@ -847,12 +847,12 @@ impl Identifier {
             }
 
             let mut guard = DEVICE_LISTS.lock().unwrap();
-            let device_ctx = guard
-                .entry((*cm_id.as_ptr()).verbs as usize)
-                .or_insert(Arc::new(DeviceContext {
+            let device_ctx = guard.entry((*cm_id.as_ptr()).verbs as usize).or_insert_with(|| {
+                Arc::new(DeviceContext {
                     // Safe due to the is_null() check above.
                     context: NonNull::new((*cm_id.as_ptr()).verbs).unwrap(),
-                }));
+                })
+            });
 
             Some(device_ctx.clone())
         }
@@ -1150,6 +1150,47 @@ mod tests {
                 drop(id);
 
                 assert_eq!(Arc::strong_count(&channel), 1);
+
+                Ok(())
+            },
+            Err(_) => Ok(()),
+        }
+    }
+
+    #[test]
+    fn test_get_device_context_caches_correctly() -> Result<(), Box<dyn std::error::Error>> {
+        match EventChannel::new() {
+            Ok(channel) => {
+                let id = channel.create_id(PortSpace::Tcp)?;
+
+                let _ = id.resolve_addr(
+                    None,
+                    SocketAddr::from((IpAddr::from_str("127.0.0.1")?, 0)),
+                    Duration::new(0, 200000000),
+                );
+
+                let event = channel.get_cm_event()?;
+                assert_eq!(event.event_type(), EventType::AddressResolved);
+
+                let ctx1 = id.get_device_context();
+                let ctx2 = id.get_device_context();
+                let ctx3 = id.get_device_context();
+
+                assert!(ctx1.is_some(), "First get_device_context should return Some");
+                assert!(ctx2.is_some(), "Second get_device_context should return Some");
+                assert!(ctx3.is_some(), "Third get_device_context should return Some");
+
+                assert!(
+                    Arc::ptr_eq(&ctx1.clone().unwrap(), &ctx2.clone().unwrap()),
+                    "ctx1 and ctx2 should point to the same DeviceContext"
+                );
+                assert!(
+                    Arc::ptr_eq(&ctx2.clone().unwrap(), &ctx3.clone().unwrap()),
+                    "ctx2 and ctx3 should point to the same DeviceContext"
+                );
+
+                let ctx = ctx1.unwrap();
+                let _pd = ctx.alloc_pd()?;
 
                 Ok(())
             },
