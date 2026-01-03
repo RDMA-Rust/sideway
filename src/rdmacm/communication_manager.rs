@@ -517,6 +517,42 @@ impl Event {
         unsafe { self.event.as_ref().status }
     }
 
+    /// Get the private data sent by the remote peer.
+    ///
+    /// This is typically available for [`EventType::ConnectRequest`] and
+    /// [`EventType::ConnectResponse`] events, where the remote peer may have
+    /// sent private data as part of the connection setup.
+    ///
+    /// # Returns
+    /// - `Some(&[u8])` - The private data slice if any was provided
+    /// - `None` - If no private data was sent or the length is 0
+    ///
+    /// # Example
+    /// ```ignore
+    /// match event.event_type() {
+    ///     EventType::ConnectRequest => {
+    ///         if let Some(data) = event.get_private_data() {
+    ///             println!("Received {} bytes of private data", data.len());
+    ///         }
+    ///     }
+    ///     _ => {}
+    /// }
+    /// ```
+    pub fn get_private_data(&self) -> Option<&[u8]> {
+        unsafe {
+            let param = &self.event.as_ref().param.conn;
+            let len = param.private_data_len as usize;
+            if len == 0 || param.private_data.is_null() {
+                None
+            } else {
+                Some(std::slice::from_raw_parts(
+                    param.private_data as *const u8,
+                    len,
+                ))
+            }
+        }
+    }
+
     /// Acknowledge and free the communication event.
     ///
     /// # Note
@@ -1000,6 +1036,61 @@ impl ConnectionParameter {
     ///
     pub fn setup_qp_number(&mut self, qp_number: u32) -> &mut Self {
         self.0.qp_num = qp_number;
+        self
+    }
+
+    /// Setup the private data to be sent with connect or accept.
+    ///
+    /// # Arguments
+    /// * `data` - The private data slice. Maximum 56 bytes for RC/UC connections,
+    ///            180 bytes for UD. Data exceeding the limit will be truncated.
+    ///
+    /// # Safety
+    /// The caller must ensure the data slice remains valid until the connect/accept
+    /// operation completes.
+    ///
+    /// # Example
+    /// ```ignore
+    /// let my_data = [1u8, 2, 3, 4];
+    /// param.setup_private_data(&my_data);
+    /// id.connect(param)?;
+    /// ```
+    pub fn setup_private_data(&mut self, data: &[u8]) -> &mut Self {
+        // Maximum private_data for RC/UC is 56 bytes, for UD is 180 bytes
+        // We use 56 as the safe limit for RC connections
+        let len = data.len().min(56);
+        self.0.private_data = data.as_ptr() as *const _;
+        self.0.private_data_len = len as u8;
+        self
+    }
+
+    /// Setup responder resources for the connection.
+    /// This is the maximum number of outstanding RDMA read/atomic operations
+    /// the local side will accept from the remote side.
+    pub fn setup_responder_resources(&mut self, resources: u8) -> &mut Self {
+        self.0.responder_resources = resources;
+        self
+    }
+
+    /// Setup initiator depth for the connection.
+    /// This is the maximum number of outstanding RDMA read/atomic operations
+    /// that the local side will have pending to the remote side.
+    pub fn setup_initiator_depth(&mut self, depth: u8) -> &mut Self {
+        self.0.initiator_depth = depth;
+        self
+    }
+
+    /// Setup retry count for the connection.
+    /// The number of times to retry a connection request or response.
+    pub fn setup_retry_count(&mut self, count: u8) -> &mut Self {
+        self.0.retry_count = count;
+        self
+    }
+
+    /// Setup RNR retry count for the connection.
+    /// The number of times to retry a receiver-not-ready error.
+    pub fn setup_rnr_retry_count(&mut self, count: u8) -> &mut Self {
+        self.0.rnr_retry_count = count;
         self
     }
 }
