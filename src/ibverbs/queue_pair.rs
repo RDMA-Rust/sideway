@@ -151,6 +151,20 @@ pub enum QueuePairType {
     ReliableConnectionExtendedRecv = ibv_qp_type::IBV_QPT_XRC_RECV,
 }
 
+impl From<u32> for QueuePairType {
+    fn from(qp_type: u32) -> Self {
+        match qp_type {
+            ibv_qp_type::IBV_QPT_RC => QueuePairType::ReliableConnection,
+            ibv_qp_type::IBV_QPT_UC => QueuePairType::UnreliableConnection,
+            ibv_qp_type::IBV_QPT_UD => QueuePairType::UnreliableDatagram,
+            ibv_qp_type::IBV_QPT_RAW_PACKET => QueuePairType::RawPacket,
+            ibv_qp_type::IBV_QPT_XRC_SEND => QueuePairType::ReliableConnectionExtendedSend,
+            ibv_qp_type::IBV_QPT_XRC_RECV => QueuePairType::ReliableConnectionExtendedRecv,
+            _ => panic!("Unknown queue pair type: {qp_type}"),
+        }
+    }
+}
+
 /// QP's state, which controls the behavior of a QP. For detailed information, take
 /// [qp state machine] for reference.
 ///
@@ -297,9 +311,9 @@ pub trait QueuePair {
                     // User doesn't pass in a mask with IBV_QP_STATE, we just assume user doesn't
                     // want to change the state, pass self.state() as next_state
                     let err = if attr.attr_mask.contains(QueuePairAttributeMask::State) {
-                        attr_mask_check(attr.attr_mask, self.state(), attr.attr.qp_state.into())
+                        attr_mask_check(attr.attr_mask, self.state(), attr.attr.qp_state.into(), self.qp_type())
                     } else {
-                        attr_mask_check(attr.attr_mask, self.state(), self.state())
+                        attr_mask_check(attr.attr_mask, self.state(), self.state(), self.qp_type())
                     };
                     match err {
                         Ok(()) => {
@@ -352,6 +366,11 @@ pub trait QueuePair {
     /// Get the [QueuePair]'s state.
     fn state(&self) -> QueuePairState {
         unsafe { self.qp().as_ref().state.into() }
+    }
+
+    /// Get the [QueuePair]'s type.
+    fn qp_type(&self) -> QueuePairType {
+        unsafe { self.qp().as_ref().qp_type.into() }
     }
 
     /// Get the [QueuePair]'s number.
@@ -497,19 +516,18 @@ struct QueuePairStateTableEntry {
     optional_mask: QueuePairAttributeMask,
 }
 
-static RC_QP_STATE_TABLE: LazyLock<
-    [[QueuePairStateTableEntry; QueuePairState::Error as usize + 1]; QueuePairState::Error as usize + 1],
-> = LazyLock::new(|| {
-    use QueuePairState::*;
+type QueuePairStateTable =
+    [[QueuePairStateTableEntry; QueuePairState::Error as usize + 1]; QueuePairState::Error as usize + 1];
 
+fn init_qp_state_table() -> QueuePairStateTable {
     let mut qp_state_table = [[QueuePairStateTableEntry {
         valid: false,
         required_mask: QueuePairAttributeMask { bits: 0 },
         optional_mask: QueuePairAttributeMask { bits: 0 },
-    }; Error as usize + 1]; Error as usize + 1];
-    let mut state = Reset;
+    }; QueuePairState::Error as usize + 1]; QueuePairState::Error as usize + 1];
 
-    // from any state to reset / error state only requires IBV_QP_STATE
+    use QueuePairState::*;
+    let mut state = Reset;
     while state <= Error {
         qp_state_table[state as usize][Reset as usize] = QueuePairStateTableEntry {
             valid: true,
@@ -525,6 +543,16 @@ static RC_QP_STATE_TABLE: LazyLock<
 
         state = (state as u32 + 1).into()
     }
+
+    qp_state_table
+}
+
+static RC_QP_STATE_TABLE: LazyLock<
+    [[QueuePairStateTableEntry; QueuePairState::Error as usize + 1]; QueuePairState::Error as usize + 1],
+> = LazyLock::new(|| {
+    use QueuePairState::*;
+
+    let mut qp_state_table = init_qp_state_table();
 
     qp_state_table[Reset as usize][Init as usize] = QueuePairStateTableEntry {
         valid: true,
@@ -617,6 +645,229 @@ static RC_QP_STATE_TABLE: LazyLock<
 
     qp_state_table
 });
+
+static UC_QP_STATE_TABLE: LazyLock<
+    [[QueuePairStateTableEntry; QueuePairState::Error as usize + 1]; QueuePairState::Error as usize + 1],
+> = LazyLock::new(|| {
+    use QueuePairState::*;
+
+    let mut qp_state_table = init_qp_state_table();
+
+    qp_state_table[Reset as usize][Init as usize] = QueuePairStateTableEntry {
+        valid: true,
+        required_mask: QueuePairAttributeMask::State
+            | QueuePairAttributeMask::PartitionKeyIndex
+            | QueuePairAttributeMask::Port
+            | QueuePairAttributeMask::AccessFlags,
+        optional_mask: QueuePairAttributeMask { bits: 0 },
+    };
+
+    qp_state_table[Init as usize][Init as usize] = QueuePairStateTableEntry {
+        valid: true,
+        required_mask: QueuePairAttributeMask { bits: 0 },
+        optional_mask: QueuePairAttributeMask::PartitionKeyIndex
+            | QueuePairAttributeMask::Port
+            | QueuePairAttributeMask::AccessFlags,
+    };
+
+    qp_state_table[Init as usize][ReadyToReceive as usize] = QueuePairStateTableEntry {
+        valid: true,
+        required_mask: QueuePairAttributeMask::State
+            | QueuePairAttributeMask::AddressVector
+            | QueuePairAttributeMask::PathMtu
+            | QueuePairAttributeMask::DestinationQueuePairNumber
+            | QueuePairAttributeMask::ReceiveQueuePacketSequenceNumber,
+        optional_mask: QueuePairAttributeMask::PartitionKeyIndex
+            | QueuePairAttributeMask::AccessFlags
+            | QueuePairAttributeMask::AlternatePath,
+    };
+
+    qp_state_table[ReadyToReceive as usize][ReadyToSend as usize] = QueuePairStateTableEntry {
+        valid: true,
+        required_mask: QueuePairAttributeMask::State | QueuePairAttributeMask::SendQueuePacketSequenceNumber,
+        optional_mask: QueuePairAttributeMask::CurrentState
+            | QueuePairAttributeMask::AccessFlags
+            | QueuePairAttributeMask::AlternatePath
+            | QueuePairAttributeMask::PathMigrationState,
+    };
+
+    qp_state_table[ReadyToSend as usize][ReadyToSend as usize] = QueuePairStateTableEntry {
+        valid: true,
+        required_mask: QueuePairAttributeMask { bits: 0 },
+        optional_mask: QueuePairAttributeMask::CurrentState
+            | QueuePairAttributeMask::AccessFlags
+            | QueuePairAttributeMask::AlternatePath
+            | QueuePairAttributeMask::PathMigrationState,
+    };
+
+    qp_state_table[ReadyToSend as usize][SendQueueDrain as usize] = QueuePairStateTableEntry {
+        valid: true,
+        required_mask: QueuePairAttributeMask::State,
+        optional_mask: QueuePairAttributeMask::EnableSendQueueDrainedAsyncNotify,
+    };
+
+    qp_state_table[SendQueueDrain as usize][ReadyToSend as usize] = QueuePairStateTableEntry {
+        valid: true,
+        required_mask: QueuePairAttributeMask::State,
+        optional_mask: QueuePairAttributeMask::CurrentState
+            | QueuePairAttributeMask::AccessFlags
+            | QueuePairAttributeMask::AlternatePath
+            | QueuePairAttributeMask::PathMigrationState,
+    };
+
+    qp_state_table[SendQueueDrain as usize][SendQueueDrain as usize] = QueuePairStateTableEntry {
+        valid: true,
+        required_mask: QueuePairAttributeMask { bits: 0 },
+        optional_mask: QueuePairAttributeMask::PartitionKeyIndex
+            | QueuePairAttributeMask::Port
+            | QueuePairAttributeMask::AccessFlags
+            | QueuePairAttributeMask::AddressVector
+            | QueuePairAttributeMask::AlternatePath
+            | QueuePairAttributeMask::PathMigrationState,
+    };
+
+    qp_state_table
+});
+
+static UD_QP_STATE_TABLE: LazyLock<
+    [[QueuePairStateTableEntry; QueuePairState::Error as usize + 1]; QueuePairState::Error as usize + 1],
+> = LazyLock::new(|| {
+    use QueuePairState::*;
+
+    let mut qp_state_table = init_qp_state_table();
+
+    qp_state_table[Reset as usize][Init as usize] = QueuePairStateTableEntry {
+        valid: true,
+        required_mask: QueuePairAttributeMask::State
+            | QueuePairAttributeMask::PartitionKeyIndex
+            | QueuePairAttributeMask::Port
+            | QueuePairAttributeMask::QueueKey,
+        optional_mask: QueuePairAttributeMask { bits: 0 },
+    };
+
+    qp_state_table[Init as usize][Init as usize] = QueuePairStateTableEntry {
+        valid: true,
+        required_mask: QueuePairAttributeMask { bits: 0 },
+        optional_mask: QueuePairAttributeMask::PartitionKeyIndex
+            | QueuePairAttributeMask::Port
+            | QueuePairAttributeMask::QueueKey,
+    };
+
+    qp_state_table[Init as usize][ReadyToReceive as usize] = QueuePairStateTableEntry {
+        valid: true,
+        required_mask: QueuePairAttributeMask::State,
+        optional_mask: QueuePairAttributeMask::PartitionKeyIndex | QueuePairAttributeMask::QueueKey,
+    };
+
+    qp_state_table[ReadyToReceive as usize][ReadyToSend as usize] = QueuePairStateTableEntry {
+        valid: true,
+        required_mask: QueuePairAttributeMask::State | QueuePairAttributeMask::SendQueuePacketSequenceNumber,
+        optional_mask: QueuePairAttributeMask::CurrentState | QueuePairAttributeMask::QueueKey,
+    };
+
+    qp_state_table[ReadyToSend as usize][ReadyToSend as usize] = QueuePairStateTableEntry {
+        valid: true,
+        required_mask: QueuePairAttributeMask { bits: 0 },
+        optional_mask: QueuePairAttributeMask::CurrentState | QueuePairAttributeMask::QueueKey,
+    };
+
+    qp_state_table[ReadyToSend as usize][SendQueueDrain as usize] = QueuePairStateTableEntry {
+        valid: true,
+        required_mask: QueuePairAttributeMask::State,
+        optional_mask: QueuePairAttributeMask::EnableSendQueueDrainedAsyncNotify,
+    };
+
+    qp_state_table[SendQueueDrain as usize][ReadyToSend as usize] = QueuePairStateTableEntry {
+        valid: true,
+        required_mask: QueuePairAttributeMask::State,
+        optional_mask: QueuePairAttributeMask::CurrentState | QueuePairAttributeMask::QueueKey,
+    };
+
+    qp_state_table[SendQueueDrain as usize][SendQueueDrain as usize] = QueuePairStateTableEntry {
+        valid: true,
+        required_mask: QueuePairAttributeMask { bits: 0 },
+        optional_mask: QueuePairAttributeMask::PartitionKeyIndex
+            | QueuePairAttributeMask::Port
+            | QueuePairAttributeMask::QueueKey,
+    };
+
+    qp_state_table[SendQueueError as usize][ReadyToSend as usize] = QueuePairStateTableEntry {
+        valid: true,
+        required_mask: QueuePairAttributeMask::State,
+        optional_mask: QueuePairAttributeMask::CurrentState | QueuePairAttributeMask::QueueKey,
+    };
+
+    qp_state_table
+});
+
+static RAW_PACKET_QP_STATE_TABLE: LazyLock<
+    [[QueuePairStateTableEntry; QueuePairState::Error as usize + 1]; QueuePairState::Error as usize + 1],
+> = LazyLock::new(|| {
+    use QueuePairState::*;
+
+    let mut qp_state_table = init_qp_state_table();
+
+    qp_state_table[Reset as usize][Init as usize] = QueuePairStateTableEntry {
+        valid: true,
+        required_mask: QueuePairAttributeMask::State | QueuePairAttributeMask::Port,
+        optional_mask: QueuePairAttributeMask { bits: 0 },
+    };
+
+    qp_state_table[Init as usize][Init as usize] = QueuePairStateTableEntry {
+        valid: true,
+        required_mask: QueuePairAttributeMask { bits: 0 },
+        optional_mask: QueuePairAttributeMask::Port,
+    };
+
+    qp_state_table[Init as usize][ReadyToReceive as usize] = QueuePairStateTableEntry {
+        valid: true,
+        required_mask: QueuePairAttributeMask::State,
+        optional_mask: QueuePairAttributeMask { bits: 0 },
+    };
+
+    qp_state_table[ReadyToReceive as usize][ReadyToSend as usize] = QueuePairStateTableEntry {
+        valid: true,
+        required_mask: QueuePairAttributeMask::State,
+        optional_mask: QueuePairAttributeMask::RateLimit,
+    };
+
+    qp_state_table[ReadyToSend as usize][ReadyToSend as usize] = QueuePairStateTableEntry {
+        valid: true,
+        required_mask: QueuePairAttributeMask { bits: 0 },
+        optional_mask: QueuePairAttributeMask::RateLimit,
+    };
+
+    qp_state_table[ReadyToSend as usize][SendQueueDrain as usize] = QueuePairStateTableEntry {
+        valid: true,
+        required_mask: QueuePairAttributeMask::State,
+        optional_mask: QueuePairAttributeMask::EnableSendQueueDrainedAsyncNotify,
+    };
+
+    qp_state_table[SendQueueDrain as usize][ReadyToSend as usize] = QueuePairStateTableEntry {
+        valid: true,
+        required_mask: QueuePairAttributeMask::State,
+        optional_mask: QueuePairAttributeMask::RateLimit,
+    };
+
+    qp_state_table[SendQueueDrain as usize][SendQueueDrain as usize] = QueuePairStateTableEntry {
+        valid: true,
+        required_mask: QueuePairAttributeMask { bits: 0 },
+        optional_mask: QueuePairAttributeMask::Port | QueuePairAttributeMask::RateLimit,
+    };
+
+    qp_state_table
+});
+
+fn get_qp_state_table(qp_type: QueuePairType) -> &'static QueuePairStateTable {
+    match qp_type {
+        QueuePairType::ReliableConnection
+        | QueuePairType::ReliableConnectionExtendedSend
+        | QueuePairType::ReliableConnectionExtendedRecv => &RC_QP_STATE_TABLE,
+        QueuePairType::UnreliableConnection => &UC_QP_STATE_TABLE,
+        QueuePairType::UnreliableDatagram => &UD_QP_STATE_TABLE,
+        QueuePairType::RawPacket => &RAW_PACKET_QP_STATE_TABLE,
+    }
+}
 
 /// The legacy [`QueuePair`] created with [`QueuePairBuilder::build`] ([`ibv_create_qp`]), which
 /// doesn't support some advanced features (including [`ibv_wr_*`] APIs).
@@ -1292,9 +1543,10 @@ fn get_invalid_mask(
 }
 
 fn attr_mask_check(
-    attr_mask: QueuePairAttributeMask, cur_state: QueuePairState, next_state: QueuePairState,
+    attr_mask: QueuePairAttributeMask, cur_state: QueuePairState, next_state: QueuePairState, qp_type: QueuePairType,
 ) -> Result<(), ModifyQueuePairError> {
-    if !RC_QP_STATE_TABLE[cur_state as usize][next_state as usize].valid {
+    let state_table = get_qp_state_table(qp_type);
+    if !state_table[cur_state as usize][next_state as usize].valid {
         return Err(ModifyQueuePairErrorKind::InvalidTransition {
             cur_state,
             next_state,
@@ -1303,8 +1555,8 @@ fn attr_mask_check(
         .into());
     }
 
-    let required = RC_QP_STATE_TABLE[cur_state as usize][next_state as usize].required_mask;
-    let optional = RC_QP_STATE_TABLE[cur_state as usize][next_state as usize].optional_mask;
+    let required = state_table[cur_state as usize][next_state as usize].required_mask;
+    let optional = state_table[cur_state as usize][next_state as usize].optional_mask;
     let invalid = get_invalid_mask(attr_mask, required, optional);
     let needed = get_needed_mask(attr_mask, required);
     if invalid.bits == 0 && needed.bits == 0 {
@@ -1912,6 +2164,325 @@ mod tests {
     use crate::ibverbs::address::GidType;
     use crate::ibverbs::completion::GenericCompletionQueue;
     use crate::ibverbs::device;
+
+    mod state_table_tests {
+        use super::*;
+
+        #[test]
+        fn test_rc_reset_to_init_valid() {
+            let mask = QueuePairAttributeMask::State
+                | QueuePairAttributeMask::PartitionKeyIndex
+                | QueuePairAttributeMask::Port
+                | QueuePairAttributeMask::AccessFlags;
+            let result = attr_mask_check(
+                mask,
+                QueuePairState::Reset,
+                QueuePairState::Init,
+                QueuePairType::ReliableConnection,
+            );
+            assert!(result.is_ok());
+        }
+
+        #[test]
+        fn test_rc_reset_to_init_missing_required() {
+            let mask = QueuePairAttributeMask::State | QueuePairAttributeMask::Port;
+            let result = attr_mask_check(
+                mask,
+                QueuePairState::Reset,
+                QueuePairState::Init,
+                QueuePairType::ReliableConnection,
+            );
+            assert!(result.is_err());
+            match result.unwrap_err().0 {
+                ModifyQueuePairErrorKind::InvalidAttributeMask { needed, .. } => {
+                    assert!(needed.contains(QueuePairAttributeMask::PartitionKeyIndex));
+                    assert!(needed.contains(QueuePairAttributeMask::AccessFlags));
+                },
+                _ => panic!("Expected InvalidAttributeMask error"),
+            }
+        }
+
+        #[test]
+        fn test_rc_reset_to_rts_invalid_transition() {
+            let mask = QueuePairAttributeMask::State;
+            let result = attr_mask_check(
+                mask,
+                QueuePairState::Reset,
+                QueuePairState::ReadyToSend,
+                QueuePairType::ReliableConnection,
+            );
+            assert!(result.is_err());
+            match result.unwrap_err().0 {
+                ModifyQueuePairErrorKind::InvalidTransition {
+                    cur_state, next_state, ..
+                } => {
+                    assert_eq!(cur_state, QueuePairState::Reset);
+                    assert_eq!(next_state, QueuePairState::ReadyToSend);
+                },
+                _ => panic!("Expected InvalidTransition error"),
+            }
+        }
+
+        #[test]
+        fn test_rc_any_to_reset_valid() {
+            for state in [
+                QueuePairState::Reset,
+                QueuePairState::Init,
+                QueuePairState::ReadyToReceive,
+                QueuePairState::ReadyToSend,
+                QueuePairState::SendQueueDrain,
+                QueuePairState::Error,
+            ] {
+                let mask = QueuePairAttributeMask::State;
+                let result = attr_mask_check(mask, state, QueuePairState::Reset, QueuePairType::ReliableConnection);
+                assert!(result.is_ok(), "Failed for state {:?}", state);
+            }
+        }
+
+        #[test]
+        fn test_rc_any_to_error_valid() {
+            for state in [
+                QueuePairState::Reset,
+                QueuePairState::Init,
+                QueuePairState::ReadyToReceive,
+                QueuePairState::ReadyToSend,
+                QueuePairState::SendQueueDrain,
+                QueuePairState::Error,
+            ] {
+                let mask = QueuePairAttributeMask::State;
+                let result = attr_mask_check(mask, state, QueuePairState::Error, QueuePairType::ReliableConnection);
+                assert!(result.is_ok(), "Failed for state {:?}", state);
+            }
+        }
+
+        #[test]
+        fn test_uc_reset_to_init_valid() {
+            let mask = QueuePairAttributeMask::State
+                | QueuePairAttributeMask::PartitionKeyIndex
+                | QueuePairAttributeMask::Port
+                | QueuePairAttributeMask::AccessFlags;
+            let result = attr_mask_check(
+                mask,
+                QueuePairState::Reset,
+                QueuePairState::Init,
+                QueuePairType::UnreliableConnection,
+            );
+            assert!(result.is_ok());
+        }
+
+        #[test]
+        fn test_uc_init_to_rtr_valid() {
+            let mask = QueuePairAttributeMask::State
+                | QueuePairAttributeMask::AddressVector
+                | QueuePairAttributeMask::PathMtu
+                | QueuePairAttributeMask::DestinationQueuePairNumber
+                | QueuePairAttributeMask::ReceiveQueuePacketSequenceNumber;
+            let result = attr_mask_check(
+                mask,
+                QueuePairState::Init,
+                QueuePairState::ReadyToReceive,
+                QueuePairType::UnreliableConnection,
+            );
+            assert!(result.is_ok());
+        }
+
+        #[test]
+        fn test_uc_rtr_to_rts_no_timeout_retry() {
+            let mask = QueuePairAttributeMask::State | QueuePairAttributeMask::SendQueuePacketSequenceNumber;
+            let result = attr_mask_check(
+                mask,
+                QueuePairState::ReadyToReceive,
+                QueuePairState::ReadyToSend,
+                QueuePairType::UnreliableConnection,
+            );
+            assert!(result.is_ok());
+        }
+
+        #[test]
+        fn test_ud_reset_to_init_requires_qkey() {
+            let mask = QueuePairAttributeMask::State
+                | QueuePairAttributeMask::PartitionKeyIndex
+                | QueuePairAttributeMask::Port
+                | QueuePairAttributeMask::QueueKey;
+            let result = attr_mask_check(
+                mask,
+                QueuePairState::Reset,
+                QueuePairState::Init,
+                QueuePairType::UnreliableDatagram,
+            );
+            assert!(result.is_ok());
+        }
+
+        #[test]
+        fn test_ud_reset_to_init_missing_qkey() {
+            let mask = QueuePairAttributeMask::State
+                | QueuePairAttributeMask::PartitionKeyIndex
+                | QueuePairAttributeMask::Port;
+            let result = attr_mask_check(
+                mask,
+                QueuePairState::Reset,
+                QueuePairState::Init,
+                QueuePairType::UnreliableDatagram,
+            );
+            assert!(result.is_err());
+            match result.unwrap_err().0 {
+                ModifyQueuePairErrorKind::InvalidAttributeMask { needed, .. } => {
+                    assert!(needed.contains(QueuePairAttributeMask::QueueKey));
+                },
+                _ => panic!("Expected InvalidAttributeMask error"),
+            }
+        }
+
+        #[test]
+        fn test_ud_init_to_rtr_minimal() {
+            let mask = QueuePairAttributeMask::State;
+            let result = attr_mask_check(
+                mask,
+                QueuePairState::Init,
+                QueuePairState::ReadyToReceive,
+                QueuePairType::UnreliableDatagram,
+            );
+            assert!(result.is_ok());
+        }
+
+        #[test]
+        fn test_ud_rtr_to_rts_valid() {
+            let mask = QueuePairAttributeMask::State | QueuePairAttributeMask::SendQueuePacketSequenceNumber;
+            let result = attr_mask_check(
+                mask,
+                QueuePairState::ReadyToReceive,
+                QueuePairState::ReadyToSend,
+                QueuePairType::UnreliableDatagram,
+            );
+            assert!(result.is_ok());
+        }
+
+        #[test]
+        fn test_ud_sqe_to_rts_valid() {
+            let mask = QueuePairAttributeMask::State;
+            let result = attr_mask_check(
+                mask,
+                QueuePairState::SendQueueError,
+                QueuePairState::ReadyToSend,
+                QueuePairType::UnreliableDatagram,
+            );
+            assert!(result.is_ok());
+        }
+
+        #[test]
+        fn test_raw_packet_reset_to_init_port_only() {
+            let mask = QueuePairAttributeMask::State | QueuePairAttributeMask::Port;
+            let result = attr_mask_check(
+                mask,
+                QueuePairState::Reset,
+                QueuePairState::Init,
+                QueuePairType::RawPacket,
+            );
+            assert!(result.is_ok());
+        }
+
+        #[test]
+        fn test_raw_packet_init_to_rtr_minimal() {
+            let mask = QueuePairAttributeMask::State;
+            let result = attr_mask_check(
+                mask,
+                QueuePairState::Init,
+                QueuePairState::ReadyToReceive,
+                QueuePairType::RawPacket,
+            );
+            assert!(result.is_ok());
+        }
+
+        #[test]
+        fn test_raw_packet_rtr_to_rts_minimal() {
+            let mask = QueuePairAttributeMask::State;
+            let result = attr_mask_check(
+                mask,
+                QueuePairState::ReadyToReceive,
+                QueuePairState::ReadyToSend,
+                QueuePairType::RawPacket,
+            );
+            assert!(result.is_ok());
+        }
+
+        #[test]
+        fn test_raw_packet_rtr_to_rts_with_rate_limit() {
+            let mask = QueuePairAttributeMask::State | QueuePairAttributeMask::RateLimit;
+            let result = attr_mask_check(
+                mask,
+                QueuePairState::ReadyToReceive,
+                QueuePairState::ReadyToSend,
+                QueuePairType::RawPacket,
+            );
+            assert!(result.is_ok());
+        }
+
+        #[test]
+        fn test_invalid_mask_detected() {
+            let mask = QueuePairAttributeMask::State | QueuePairAttributeMask::Port | QueuePairAttributeMask::Timeout;
+            let result = attr_mask_check(
+                mask,
+                QueuePairState::Reset,
+                QueuePairState::Init,
+                QueuePairType::RawPacket,
+            );
+            assert!(result.is_err());
+            match result.unwrap_err().0 {
+                ModifyQueuePairErrorKind::InvalidAttributeMask { invalid, .. } => {
+                    assert!(invalid.contains(QueuePairAttributeMask::Timeout));
+                },
+                _ => panic!("Expected InvalidAttributeMask error"),
+            }
+        }
+
+        #[test]
+        fn test_get_qp_state_table_returns_correct_table() {
+            assert!(std::ptr::eq(
+                get_qp_state_table(QueuePairType::ReliableConnection),
+                &*RC_QP_STATE_TABLE
+            ));
+            assert!(std::ptr::eq(
+                get_qp_state_table(QueuePairType::UnreliableConnection),
+                &*UC_QP_STATE_TABLE
+            ));
+            assert!(std::ptr::eq(
+                get_qp_state_table(QueuePairType::UnreliableDatagram),
+                &*UD_QP_STATE_TABLE
+            ));
+            assert!(std::ptr::eq(
+                get_qp_state_table(QueuePairType::RawPacket),
+                &*RAW_PACKET_QP_STATE_TABLE
+            ));
+            assert!(std::ptr::eq(
+                get_qp_state_table(QueuePairType::ReliableConnectionExtendedSend),
+                &*RC_QP_STATE_TABLE
+            ));
+            assert!(std::ptr::eq(
+                get_qp_state_table(QueuePairType::ReliableConnectionExtendedRecv),
+                &*RC_QP_STATE_TABLE
+            ));
+        }
+
+        #[test]
+        fn test_qp_type_from_u32() {
+            assert!(matches!(
+                QueuePairType::from(rdma_mummy_sys::ibv_qp_type::IBV_QPT_RC),
+                QueuePairType::ReliableConnection
+            ));
+            assert!(matches!(
+                QueuePairType::from(rdma_mummy_sys::ibv_qp_type::IBV_QPT_UC),
+                QueuePairType::UnreliableConnection
+            ));
+            assert!(matches!(
+                QueuePairType::from(rdma_mummy_sys::ibv_qp_type::IBV_QPT_UD),
+                QueuePairType::UnreliableDatagram
+            ));
+            assert!(matches!(
+                QueuePairType::from(rdma_mummy_sys::ibv_qp_type::IBV_QPT_RAW_PACKET),
+                QueuePairType::RawPacket
+            ));
+        }
+    }
 
     #[test]
     fn test_query_qp() -> Result<(), Box<dyn std::error::Error>> {
