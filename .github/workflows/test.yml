@@ -21,6 +21,7 @@ jobs:
         uses: actions-rust-lang/rustfmt@v1
       - name: Run tests
         run: |
+          sudo rmmod mlx5_ib
           cd ${{ github.workspace }}
           sudo apt install libibverbs1 librdmacm1
           cargo clippy --all-targets -- -D warnings
