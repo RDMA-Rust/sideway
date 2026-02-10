@@ -249,7 +249,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
     let mut results: Vec<StageResult> = Vec::new();
 
-    if args.server_address.is_some() {
+    if let Some(server_address) = args.server_address {
         let (resp_tx, resp_rx) = channel();
 
         let _resp_handler = thread::spawn(move || loop {
@@ -306,7 +306,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         });
 
-        let ip = IpAddr::from_str(&args.server_address.unwrap()).expect("Invalid IP address");
+        let ip = IpAddr::from_str(&server_address).expect("Invalid IP address");
         let server_addr = SocketAddr::from((ip, args.port));
 
         let ip = IpAddr::from_str(&args.bind_address.unwrap()).expect("Invalid IP address");
