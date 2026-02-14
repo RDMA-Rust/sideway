@@ -2,12 +2,41 @@
 //! in RDMA communication, like [`Gid`] and [`AddressHandleAttribute`].
 use libc::IF_NAMESIZE;
 use rdma_mummy_sys::{
-    ibv_ah_attr, ibv_gid, ibv_gid_entry, ibv_global_route, IBV_GID_TYPE_IB, IBV_GID_TYPE_ROCE_V1, IBV_GID_TYPE_ROCE_V2,
+    ibv_ah, ibv_ah_attr, ibv_create_ah, ibv_gid, ibv_gid_entry, ibv_global_route, ibv_grh, IBV_GID_TYPE_IB,
+    IBV_GID_TYPE_ROCE_V1, IBV_GID_TYPE_ROCE_V2,
 };
 use serde::{Deserialize, Serialize};
 use std::ffi::CStr;
 use std::io;
+use std::ptr;
+use std::ptr::NonNull;
+use std::sync::Arc;
 use std::{fmt, mem::MaybeUninit, net::Ipv6Addr};
+
+use super::protection_domain::ProtectionDomain;
+
+/// Error returned by [`ProtectionDomain::create_ah`] for creating a new RDMA Address Handle.
+#[derive(Debug, thiserror::Error)]
+#[error("failed to create address handle")]
+#[non_exhaustive]
+pub struct CreateAddressHandleError(#[from] pub CreateAddressHandleErrorKind);
+
+/// The enum type for [`CreateAddressHandleError`].
+#[derive(Debug, thiserror::Error)]
+#[error(transparent)]
+#[non_exhaustive]
+pub enum CreateAddressHandleErrorKind {
+    Ibverbs(#[from] io::Error),
+}
+
+/// Error returned when constructing a [`GlobalRoutingHeader`] from invalid input.
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum GlobalRoutingHeaderError {
+    /// The provided slice is smaller than the GRH header size.
+    #[error("raw slice length {actual} is smaller than required {expected} bytes")]
+    SliceTooSmall { actual: usize, expected: usize },
+}
 
 /// GID is a global identifier for sending packets between different subnets. For RoCEv1 and RoCEv2,
 /// it would correspond to an IP address set up on the ethernet device.
@@ -251,13 +280,255 @@ impl AddressHandleAttribute {
     }
 }
 
+pub struct AddressHandle {
+    pub(crate) handle: NonNull<ibv_ah>,
+    pub(crate) _pd: Arc<ProtectionDomain>,
+}
+
+impl AddressHandle {
+    pub fn new(pd: Arc<ProtectionDomain>, attr: &mut AddressHandleAttribute) -> Result<Self, CreateAddressHandleError> {
+        let pd_ptr = unsafe { pd.pd() };
+        let ah = unsafe { ibv_create_ah(pd_ptr.as_ptr(), &mut attr.attr as *mut _) };
+
+        Ok(AddressHandle {
+            handle: NonNull::new(ah).ok_or::<CreateAddressHandleError>(
+                CreateAddressHandleErrorKind::Ibverbs(io::Error::last_os_error()).into(),
+            )?,
+            _pd: pd,
+        })
+    }
+
+    /// # Safety
+    ///
+    /// Return the handle of address handle.
+    /// We mark this method unsafe because the lifetime of `ibv_ah` is not associated
+    /// with the return value.
+    pub unsafe fn ah(&self) -> NonNull<ibv_ah> {
+        self.handle
+    }
+}
+
+/// Size in bytes of a Global Routing Header.
+pub const GRH_HEADER_LEN: usize = 40;
+
+/// A read/write wrapper around a Global Routing Header buffer.
+///
+/// This generic wrapper allows zero-copy access to GRH fields directly from a byte buffer,
+/// following the smoltcp packet wrapper pattern.
+#[derive(Debug)]
+pub struct GlobalRoutingHeader<T: AsRef<[u8]>> {
+    buffer: T,
+}
+
+// Field byte offsets within the GRH
+mod grh_field {
+    use std::ops::Range;
+
+    pub const VERSION_TCLASS_FLOW: Range<usize> = 0..4;
+    pub const PAYLOAD_LENGTH: Range<usize> = 4..6;
+    pub const NEXT_HEADER: usize = 6;
+    pub const HOP_LIMIT: usize = 7;
+    pub const SOURCE_GID: Range<usize> = 8..24;
+    pub const DESTINATION_GID: Range<usize> = 24..40;
+}
+
+impl<T: AsRef<[u8]>> GlobalRoutingHeader<T> {
+    /// Create a raw octet buffer with a Global Routing Header structure.
+    ///
+    /// # Panics
+    ///
+    /// Accessor methods will panic if the buffer is smaller than [`GRH_HEADER_LEN`].
+    /// Use [`new_checked`](Self::new_checked) if the buffer length is not guaranteed.
+    pub const fn new_unchecked(buffer: T) -> Self {
+        GlobalRoutingHeader { buffer }
+    }
+
+    /// Shorthand for a combination of [`new_unchecked`](Self::new_unchecked) and
+    /// [`check_len`](Self::check_len).
+    pub fn new_checked(buffer: T) -> Result<Self, GlobalRoutingHeaderError> {
+        let header = Self::new_unchecked(buffer);
+        header.check_len()?;
+        Ok(header)
+    }
+
+    /// Ensure that no accessor method will panic if called.
+    /// Returns `Err` if the buffer is too short.
+    pub fn check_len(&self) -> Result<(), GlobalRoutingHeaderError> {
+        let len = self.buffer.as_ref().len();
+        if len < GRH_HEADER_LEN {
+            return Err(GlobalRoutingHeaderError::SliceTooSmall {
+                actual: len,
+                expected: GRH_HEADER_LEN,
+            });
+        }
+        Ok(())
+    }
+
+    /// Consume the header wrapper, returning the underlying buffer.
+    pub fn into_inner(self) -> T {
+        self.buffer
+    }
+
+    /// Return a reference to the underlying buffer.
+    pub fn buffer(&self) -> &[u8] {
+        self.buffer.as_ref()
+    }
+
+    /// Return a const pointer to the header buffer, suitable for FFI.
+    ///
+    /// The pointer is valid for the lifetime of the underlying buffer.
+    #[inline]
+    pub fn as_ptr(&self) -> *const u8 {
+        self.buffer.as_ref().as_ptr()
+    }
+
+    /// Copy the header bytes into a newly allocated `ibv_grh` structure.
+    ///
+    /// This is useful for FFI calls that require an owned `ibv_grh`.
+    #[inline]
+    pub fn grh(&self) -> ibv_grh {
+        unsafe { ptr::read_unaligned(self.buffer.as_ref().as_ptr().cast::<ibv_grh>()) }
+    }
+
+    /// Get the GRH version number (4 bits).
+    #[inline]
+    pub fn version(&self) -> u8 {
+        (self.buffer.as_ref()[grh_field::VERSION_TCLASS_FLOW.start] >> 4) & 0x0f
+    }
+
+    /// Get the IPv6 traffic class encoded in the header (8 bits).
+    #[inline]
+    pub fn traffic_class(&self) -> u8 {
+        let data = &self.buffer.as_ref()[grh_field::VERSION_TCLASS_FLOW];
+        ((data[0] & 0x0f) << 4) | ((data[1] >> 4) & 0x0f)
+    }
+
+    /// Get the IPv6-style flow label carried in the header (20 bits).
+    #[inline]
+    pub fn flow_label(&self) -> u32 {
+        let data = &self.buffer.as_ref()[grh_field::VERSION_TCLASS_FLOW];
+        u32::from_be_bytes([0, data[1] & 0x0f, data[2], data[3]])
+    }
+
+    /// Payload length in bytes following the GRH.
+    #[inline]
+    pub fn payload_length(&self) -> u16 {
+        let data = &self.buffer.as_ref()[grh_field::PAYLOAD_LENGTH];
+        u16::from_be_bytes([data[0], data[1]])
+    }
+
+    /// Next header identifier.
+    #[inline]
+    pub fn next_header(&self) -> u8 {
+        self.buffer.as_ref()[grh_field::NEXT_HEADER]
+    }
+
+    /// Hop limit value for the packet.
+    #[inline]
+    pub fn hop_limit(&self) -> u8 {
+        self.buffer.as_ref()[grh_field::HOP_LIMIT]
+    }
+
+    /// Source GID extracted from the header.
+    #[inline]
+    pub fn source_gid(&self) -> Gid {
+        let mut raw = [0u8; 16];
+        raw.copy_from_slice(&self.buffer.as_ref()[grh_field::SOURCE_GID]);
+        Gid { raw }
+    }
+
+    /// Destination GID extracted from the header.
+    #[inline]
+    pub fn destination_gid(&self) -> Gid {
+        let mut raw = [0u8; 16];
+        raw.copy_from_slice(&self.buffer.as_ref()[grh_field::DESTINATION_GID]);
+        Gid { raw }
+    }
+}
+
+impl<T: AsRef<[u8]> + AsMut<[u8]>> GlobalRoutingHeader<T> {
+    /// Return a mutable reference to the underlying buffer.
+    pub fn buffer_mut(&mut self) -> &mut [u8] {
+        self.buffer.as_mut()
+    }
+
+    /// Return a mutable pointer to the header buffer, suitable for FFI.
+    ///
+    /// The pointer is valid for the lifetime of the underlying buffer.
+    #[inline]
+    pub fn as_mut_ptr(&mut self) -> *mut u8 {
+        self.buffer.as_mut().as_mut_ptr()
+    }
+
+    /// Set the GRH version number (4 bits).
+    #[inline]
+    pub fn setup_version(&mut self, value: u8) {
+        let data = &mut self.buffer.as_mut()[grh_field::VERSION_TCLASS_FLOW.start];
+        *data = (*data & 0x0f) | ((value & 0x0f) << 4);
+    }
+
+    /// Set the IPv6 traffic class (8 bits).
+    #[inline]
+    pub fn setup_traffic_class(&mut self, value: u8) {
+        let data = &mut self.buffer.as_mut()[grh_field::VERSION_TCLASS_FLOW];
+        data[0] = (data[0] & 0xf0) | ((value >> 4) & 0x0f);
+        data[1] = (data[1] & 0x0f) | ((value & 0x0f) << 4);
+    }
+
+    /// Set the IPv6-style flow label (20 bits).
+    #[inline]
+    pub fn setup_flow_label(&mut self, value: u32) {
+        let data = &mut self.buffer.as_mut()[grh_field::VERSION_TCLASS_FLOW];
+        let bytes = value.to_be_bytes();
+        data[1] = (data[1] & 0xf0) | (bytes[1] & 0x0f);
+        data[2] = bytes[2];
+        data[3] = bytes[3];
+    }
+
+    /// Set the payload length.
+    #[inline]
+    pub fn setup_payload_length(&mut self, value: u16) {
+        let bytes = value.to_be_bytes();
+        self.buffer.as_mut()[grh_field::PAYLOAD_LENGTH].copy_from_slice(&bytes);
+    }
+
+    /// Set the next header identifier.
+    #[inline]
+    pub fn setup_next_header(&mut self, value: u8) {
+        self.buffer.as_mut()[grh_field::NEXT_HEADER] = value;
+    }
+
+    /// Set the hop limit.
+    #[inline]
+    pub fn setup_hop_limit(&mut self, value: u8) {
+        self.buffer.as_mut()[grh_field::HOP_LIMIT] = value;
+    }
+
+    /// Set the source GID.
+    #[inline]
+    pub fn setup_source_gid(&mut self, gid: &Gid) {
+        self.buffer.as_mut()[grh_field::SOURCE_GID].copy_from_slice(&gid.raw);
+    }
+
+    /// Set the destination GID.
+    #[inline]
+    pub fn setup_destination_gid(&mut self, gid: &Gid) {
+        self.buffer.as_mut()[grh_field::DESTINATION_GID].copy_from_slice(&gid.raw);
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use crate::ibverbs::address::Gid;
-    use rdma_mummy_sys::ibv_gid;
+    use super::{Gid, GlobalRoutingHeader, GlobalRoutingHeaderError, GRH_HEADER_LEN};
+    use rdma_mummy_sys::{ibv_gid, ibv_grh};
     use rstest::rstest;
     use std::net::Ipv6Addr;
     use std::str::FromStr;
+
+    #[test]
+    fn test_grh_header_len_matches_ibv_grh_size() {
+        assert_eq!(GRH_HEADER_LEN, std::mem::size_of::<ibv_grh>());
+    }
 
     #[rstest]
     #[case("fe80::", true)]
@@ -279,5 +550,106 @@ mod tests {
         let gid_ = ibv_gid { raw: octets };
         let gid = Gid::from(gid_);
         assert_eq!(format!("{gid}"), expected);
+    }
+
+    #[test]
+    fn test_global_routing_header_read() {
+        let src_gid = Gid::from(Ipv6Addr::from_str("fe80::1").unwrap());
+        let dst_gid = Gid::from(Ipv6Addr::from_str("fe80::2").unwrap());
+
+        // Build raw bytes: version=6, traffic_class=0x12, flow_label=0x34567
+        let mut raw = vec![0u8; GRH_HEADER_LEN + 4]; // 4 bytes payload
+        raw[0] = 0x61; // version=6, traffic_class high nibble=1
+        raw[1] = 0x23; // traffic_class low nibble=2, flow_label high nibble=3
+        raw[2] = 0x45; // flow_label
+        raw[3] = 0x67; // flow_label
+        raw[4] = 0x00; // payload length high byte
+        raw[5] = 0x04; // payload length low byte = 4
+        raw[6] = 0x1b; // next header
+        raw[7] = 0x40; // hop limit
+        raw[8..24].copy_from_slice(&src_gid.raw);
+        raw[24..40].copy_from_slice(&dst_gid.raw);
+        raw[40..44].copy_from_slice(&[0xde, 0xad, 0xbe, 0xef]); // payload
+
+        let header = GlobalRoutingHeader::new_checked(raw.as_slice()).unwrap();
+        assert_eq!(header.version(), 6);
+        assert_eq!(header.traffic_class(), 0x12);
+        assert_eq!(header.flow_label(), 0x34567);
+        assert_eq!(header.payload_length(), 4);
+        assert_eq!(header.next_header(), 0x1b);
+        assert_eq!(header.hop_limit(), 0x40);
+        assert_eq!(header.source_gid(), src_gid);
+        assert_eq!(header.destination_gid(), dst_gid);
+    }
+
+    #[test]
+    fn test_global_routing_header_write() {
+        let src_gid = Gid::from(Ipv6Addr::from_str("fe80::1").unwrap());
+        let dst_gid = Gid::from(Ipv6Addr::from_str("fe80::2").unwrap());
+
+        let mut raw = vec![0u8; GRH_HEADER_LEN];
+        let mut header = GlobalRoutingHeader::new_checked(raw.as_mut_slice()).unwrap();
+
+        header.setup_version(6);
+        header.setup_traffic_class(0x12);
+        header.setup_flow_label(0x34567);
+        header.setup_payload_length(100);
+        header.setup_next_header(0x1b);
+        header.setup_hop_limit(64);
+        header.setup_source_gid(&src_gid);
+        header.setup_destination_gid(&dst_gid);
+
+        // Verify by reading back
+        let header = GlobalRoutingHeader::new_unchecked(raw.as_slice());
+        assert_eq!(header.version(), 6);
+        assert_eq!(header.traffic_class(), 0x12);
+        assert_eq!(header.flow_label(), 0x34567);
+        assert_eq!(header.payload_length(), 100);
+        assert_eq!(header.next_header(), 0x1b);
+        assert_eq!(header.hop_limit(), 64);
+        assert_eq!(header.source_gid(), src_gid);
+        assert_eq!(header.destination_gid(), dst_gid);
+    }
+
+    #[test]
+    fn test_global_routing_header_check_len_error() {
+        let raw = vec![0u8; GRH_HEADER_LEN - 1];
+        let err = GlobalRoutingHeader::new_checked(raw.as_slice()).unwrap_err();
+
+        match err {
+            GlobalRoutingHeaderError::SliceTooSmall { actual, expected } => {
+                assert_eq!(actual, GRH_HEADER_LEN - 1);
+                assert_eq!(expected, GRH_HEADER_LEN);
+            },
+        }
+    }
+
+    #[test]
+    fn test_global_routing_header_to_ibv_grh() {
+        let src_gid = Gid::from(Ipv6Addr::from_str("fe80::1").unwrap());
+        let dst_gid = Gid::from(Ipv6Addr::from_str("fe80::2").unwrap());
+
+        let mut raw = vec![0u8; GRH_HEADER_LEN];
+        let mut header = GlobalRoutingHeader::new_unchecked(raw.as_mut_slice());
+        header.setup_version(6);
+        header.setup_traffic_class(0);
+        header.setup_flow_label(1);
+        header.setup_payload_length(0x1234);
+        header.setup_next_header(0x1b);
+        header.setup_hop_limit(0x40);
+        header.setup_source_gid(&src_gid);
+        header.setup_destination_gid(&dst_gid);
+
+        let header = GlobalRoutingHeader::new_unchecked(raw.as_slice());
+        let grh = header.grh();
+
+        // Verify the ibv_grh fields
+        assert_eq!(u32::from_be(grh.version_tclass_flow) >> 28, 6); // version
+        assert_eq!(u32::from_be(grh.version_tclass_flow) & 0x000f_ffff, 1); // flow_label
+        assert_eq!(u16::from_be(grh.paylen), 0x1234);
+        assert_eq!(grh.next_hdr, 0x1b);
+        assert_eq!(grh.hop_limit, 0x40);
+        assert_eq!(Gid::from(grh.sgid), src_gid);
+        assert_eq!(Gid::from(grh.dgid), dst_gid);
     }
 }
