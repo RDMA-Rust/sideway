@@ -752,13 +752,13 @@ impl DeviceContext {
     /// println!("HW clock: {:?}", rt.raw_clock());
     /// ```
     pub fn query_rt_values_ex(&self, mask: ValuesMask) -> Result<RtValues, QueryRtValuesError> {
-        let mut values = ibv_values_ex {
-            comp_mask: mask.bits(),
-            raw_clock: libc::timespec { tv_sec: 0, tv_nsec: 0 },
-        };
+        let mut values = std::mem::MaybeUninit::<ibv_values_ex>::uninit();
         unsafe {
-            match ibv_query_rt_values_ex(self.context.as_ptr(), &mut values) {
-                0 => Ok(RtValues { inner: values }),
+            (*values.as_mut_ptr()).comp_mask = mask.bits();
+            match ibv_query_rt_values_ex(self.context.as_ptr(), values.as_mut_ptr()) {
+                0 => Ok(RtValues {
+                    inner: values.assume_init(),
+                }),
                 ret if ret == libc::EOPNOTSUPP => Err(QueryRtValuesErrorKind::NotSupported.into()),
                 ret => Err(QueryRtValuesErrorKind::Ibverbs(io::Error::from_raw_os_error(ret)).into()),
             }
