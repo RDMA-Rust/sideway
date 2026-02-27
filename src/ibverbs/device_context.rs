@@ -7,13 +7,15 @@ use std::io;
 use std::mem::MaybeUninit;
 use std::ptr::{self, NonNull};
 use std::sync::Arc;
+use std::time::Duration;
 
+use bitmask_enum::bitmask;
 use rdma_mummy_sys::{
     ibv_alloc_pd, ibv_close_device, ibv_context, ibv_device_attr_ex, ibv_get_device_guid, ibv_get_device_name,
     ibv_gid_entry, ibv_mtu, ibv_port_attr, ibv_port_state, ibv_query_device_ex, ibv_query_gid, ibv_query_gid_ex,
-    ibv_query_gid_table, ibv_query_gid_type, ibv_query_port, IBV_GID_TYPE_IB, IBV_GID_TYPE_ROCE_V1,
-    IBV_GID_TYPE_ROCE_V2, IBV_GID_TYPE_SYSFS_IB_ROCE_V1, IBV_GID_TYPE_SYSFS_ROCE_V2, IBV_LINK_LAYER_ETHERNET,
-    IBV_LINK_LAYER_INFINIBAND, IBV_LINK_LAYER_UNSPECIFIED,
+    ibv_query_gid_table, ibv_query_gid_type, ibv_query_port, ibv_query_rt_values_ex, ibv_values_ex, ibv_values_mask,
+    IBV_GID_TYPE_IB, IBV_GID_TYPE_ROCE_V1, IBV_GID_TYPE_ROCE_V2, IBV_GID_TYPE_SYSFS_IB_ROCE_V1,
+    IBV_GID_TYPE_SYSFS_ROCE_V2, IBV_LINK_LAYER_ETHERNET, IBV_LINK_LAYER_INFINIBAND, IBV_LINK_LAYER_UNSPECIFIED,
 };
 use serde::{Deserialize, Serialize};
 
@@ -21,6 +23,22 @@ use super::address::{Gid, GidEntry};
 use super::completion::{CompletionChannel, CompletionQueueBuilder, CreateCompletionChannelError};
 use super::device::{DeviceInfo, TransportType};
 use super::protection_domain::ProtectionDomain;
+
+/// Error returned by [`DeviceContext::query_rt_values_ex`] for querying real-time values.
+#[derive(Debug, thiserror::Error)]
+#[error("failed to query RT values")]
+#[non_exhaustive]
+pub struct QueryRtValuesError(#[from] pub QueryRtValuesErrorKind);
+
+/// The enum type for [`QueryRtValuesError`].
+#[derive(Debug, thiserror::Error)]
+#[error(transparent)]
+#[non_exhaustive]
+pub enum QueryRtValuesErrorKind {
+    Ibverbs(#[from] io::Error),
+    #[error("operation not supported by driver")]
+    NotSupported,
+}
 
 /// Error returned by [`DeviceContext::alloc_pd`] for allocating a new RDMA PD.
 #[derive(Debug, thiserror::Error)]
@@ -104,6 +122,35 @@ pub struct QueryGidError {
 #[non_exhaustive]
 pub enum QueryGidErrorKind {
     Ibverbs(#[from] io::Error),
+}
+
+/// Bitmask of values to request (or that were returned) by [`DeviceContext::query_rt_values_ex`].
+///
+/// Set the desired bits before calling [`DeviceContext::query_rt_values_ex`]; on success the
+/// returned [`RtValues::comp_mask`] indicates which fields were actually populated by the driver.
+#[bitmask(u32)]
+#[bitmask_config(vec_debug)]
+pub enum ValuesMask {
+    /// Query / indicates the raw hardware clock value ([`RtValues::raw_clock`]).
+    RawClock = ibv_values_mask::IBV_VALUES_MASK_RAW_CLOCK.0 as _,
+}
+
+/// Real-time values queried from an RDMA device via [`DeviceContext::query_rt_values_ex`].
+pub struct RtValues {
+    inner: ibv_values_ex,
+}
+
+impl RtValues {
+    /// Returns the raw hardware clock as a [`Duration`] since an arbitrary epoch (device boot or
+    /// reset). Only meaningful when [`ValuesMask::RawClock`] is set in [`RtValues::comp_mask`].
+    pub fn raw_clock(&self) -> Duration {
+        Duration::new(self.inner.raw_clock.tv_sec as u64, self.inner.raw_clock.tv_nsec as u32)
+    }
+
+    /// Returns the `comp_mask` indicating which fields were actually populated by the driver.
+    pub fn comp_mask(&self) -> ValuesMask {
+        ValuesMask::from(self.inner.comp_mask)
+    }
 }
 
 /// A Global Unique Indentifier (GUID) for the RDMA device. Usually assigned to the device by its
@@ -682,6 +729,42 @@ impl DeviceContext {
         Ok(entries)
     }
 
+    /// Query real-time values from the RDMA device.
+    ///
+    /// Set bits in `mask` to request which values to retrieve. Currently the only defined bit is
+    /// [`ValuesMask::RawClock`], which retrieves the device's free-running hardware clock — useful
+    /// for correlating CQ completion timestamps with wall-clock time.
+    ///
+    /// Returns [`QueryRtValuesErrorKind::NotSupported`] if the driver does not implement this
+    /// operation.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use sideway::ibverbs::device::DeviceList;
+    /// use sideway::ibverbs::device_context::ValuesMask;
+    ///
+    /// let device_list = DeviceList::new().unwrap();
+    /// let device = device_list.get(0).unwrap();
+    /// let context = device.open().unwrap();
+    ///
+    /// let rt = context.query_rt_values_ex(ValuesMask::RawClock).unwrap();
+    /// println!("HW clock: {:?}", rt.raw_clock());
+    /// ```
+    pub fn query_rt_values_ex(&self, mask: ValuesMask) -> Result<RtValues, QueryRtValuesError> {
+        let mut values = ibv_values_ex {
+            comp_mask: mask.bits(),
+            raw_clock: libc::timespec { tv_sec: 0, tv_nsec: 0 },
+        };
+        unsafe {
+            match ibv_query_rt_values_ex(self.context.as_ptr(), &mut values) {
+                0 => Ok(RtValues { inner: values }),
+                ret if ret == libc::EOPNOTSUPP => Err(QueryRtValuesErrorKind::NotSupported.into()),
+                ret => Err(QueryRtValuesErrorKind::Ibverbs(io::Error::from_raw_os_error(ret)).into()),
+            }
+        }
+    }
+
     /// # Safety
     ///
     /// Return the handle of device context.
@@ -724,6 +807,30 @@ impl DeviceInfo for DeviceContext {
 mod tests {
     use super::*;
     use crate::ibverbs::device::{self, DeviceInfo};
+
+    #[test]
+    fn test_query_rt_values_ex() -> Result<(), Box<dyn std::error::Error>> {
+        let device_list = device::DeviceList::new()?;
+        for device in &device_list {
+            let ctx = device.open().unwrap();
+            match ctx.query_rt_values_ex(ValuesMask::RawClock) {
+                Ok(values) => {
+                    // comp_mask must have RawClock set when the driver supports it
+                    assert!(values.comp_mask().contains(ValuesMask::RawClock));
+                    // A running device should have a non-zero clock
+                    assert!(values.raw_clock().as_nanos() > 0);
+                },
+                Err(e) => {
+                    // NotSupported is acceptable on some drivers / simulators
+                    assert!(
+                        matches!(e.0, QueryRtValuesErrorKind::NotSupported),
+                        "unexpected error: {e}"
+                    );
+                },
+            }
+        }
+        Ok(())
+    }
 
     #[test]
     fn test_mtu_conversion() {
