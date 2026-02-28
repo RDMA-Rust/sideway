@@ -28,13 +28,13 @@ use super::protection_domain::ProtectionDomain;
 #[derive(Debug, thiserror::Error)]
 #[error("failed to query RT values")]
 #[non_exhaustive]
-pub struct QueryRtValuesError(#[from] pub QueryRtValuesErrorKind);
+pub struct QueryRealTimeValuesError(#[from] pub QueryRealTimeValuesErrorKind);
 
-/// The enum type for [`QueryRtValuesError`].
+/// The enum type for [`QueryRealTimeValuesError`].
 #[derive(Debug, thiserror::Error)]
 #[error(transparent)]
 #[non_exhaustive]
-pub enum QueryRtValuesErrorKind {
+pub enum QueryRealTimeValuesErrorKind {
     Ibverbs(#[from] io::Error),
     #[error("operation not supported by driver")]
     NotSupported,
@@ -127,22 +127,22 @@ pub enum QueryGidErrorKind {
 /// Bitmask of values to request (or that were returned) by [`DeviceContext::query_rt_values_ex`].
 ///
 /// Set the desired bits before calling [`DeviceContext::query_rt_values_ex`]; on success the
-/// returned [`RtValues::comp_mask`] indicates which fields were actually populated by the driver.
+/// returned [`RealTimeValues::comp_mask`] indicates which fields were actually populated by the driver.
 #[bitmask(u32)]
 #[bitmask_config(vec_debug)]
 pub enum ValuesMask {
-    /// Query / indicates the raw hardware clock value ([`RtValues::raw_clock`]).
+    /// Query / indicates the raw hardware clock value ([`RealTimeValues::raw_clock`]).
     RawClock = ibv_values_mask::IBV_VALUES_MASK_RAW_CLOCK.0 as _,
 }
 
 /// Real-time values queried from an RDMA device via [`DeviceContext::query_rt_values_ex`].
-pub struct RtValues {
+pub struct RealTimeValues {
     inner: ibv_values_ex,
 }
 
-impl RtValues {
+impl RealTimeValues {
     /// Returns the raw hardware clock as a [`Duration`] since an arbitrary epoch (device boot or
-    /// reset). Only meaningful when [`ValuesMask::RawClock`] is set in [`RtValues::comp_mask`].
+    /// reset). Only meaningful when [`ValuesMask::RawClock`] is set in [`RealTimeValues::comp_mask`].
     pub fn raw_clock(&self) -> Duration {
         Duration::new(self.inner.raw_clock.tv_sec as u64, self.inner.raw_clock.tv_nsec as u32)
     }
@@ -735,7 +735,7 @@ impl DeviceContext {
     /// [`ValuesMask::RawClock`], which retrieves the device's free-running hardware clock — useful
     /// for correlating CQ completion timestamps with wall-clock time.
     ///
-    /// Returns [`QueryRtValuesErrorKind::NotSupported`] if the driver does not implement this
+    /// Returns [`QueryRealTimeValuesErrorKind::NotSupported`] if the driver does not implement this
     /// operation.
     ///
     /// # Example
@@ -751,16 +751,16 @@ impl DeviceContext {
     /// let rt = context.query_rt_values_ex(ValuesMask::RawClock).unwrap();
     /// println!("HW clock: {:?}", rt.raw_clock());
     /// ```
-    pub fn query_rt_values_ex(&self, mask: ValuesMask) -> Result<RtValues, QueryRtValuesError> {
+    pub fn query_rt_values_ex(&self, mask: ValuesMask) -> Result<RealTimeValues, QueryRealTimeValuesError> {
         let mut values = std::mem::MaybeUninit::<ibv_values_ex>::uninit();
         unsafe {
             (*values.as_mut_ptr()).comp_mask = mask.bits();
             match ibv_query_rt_values_ex(self.context.as_ptr(), values.as_mut_ptr()) {
-                0 => Ok(RtValues {
+                0 => Ok(RealTimeValues {
                     inner: values.assume_init(),
                 }),
-                ret if ret == libc::EOPNOTSUPP => Err(QueryRtValuesErrorKind::NotSupported.into()),
-                ret => Err(QueryRtValuesErrorKind::Ibverbs(io::Error::from_raw_os_error(ret)).into()),
+                ret if ret == libc::EOPNOTSUPP => Err(QueryRealTimeValuesErrorKind::NotSupported.into()),
+                ret => Err(QueryRealTimeValuesErrorKind::Ibverbs(io::Error::from_raw_os_error(ret)).into()),
             }
         }
     }
@@ -823,7 +823,7 @@ mod tests {
                 Err(e) => {
                     // NotSupported is acceptable on some drivers / simulators
                     assert!(
-                        matches!(e.0, QueryRtValuesErrorKind::NotSupported),
+                        matches!(e.0, QueryRealTimeValuesErrorKind::NotSupported),
                         "unexpected error: {e}"
                     );
                 },
