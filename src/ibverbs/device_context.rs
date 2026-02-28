@@ -142,9 +142,17 @@ pub struct RealTimeValues {
 
 impl RealTimeValues {
     /// Returns the raw hardware clock as a [`Duration`] since an arbitrary epoch (device boot or
-    /// reset). Only meaningful when [`ValuesMask::RawClock`] is set in [`RealTimeValues::comp_mask`].
-    pub fn raw_clock(&self) -> Duration {
-        Duration::new(self.inner.raw_clock.tv_sec as u64, self.inner.raw_clock.tv_nsec as u32)
+    /// reset), or [`None`] if [`ValuesMask::RawClock`] was not set in [`RealTimeValues::comp_mask`]
+    /// (i.e. the driver did not populate this field).
+    pub fn raw_clock(&self) -> Option<Duration> {
+        if self.comp_mask().contains(ValuesMask::RawClock) {
+            Some(Duration::new(
+                self.inner.raw_clock.tv_sec as u64,
+                self.inner.raw_clock.tv_nsec as u32,
+            ))
+        } else {
+            None
+        }
     }
 
     /// Returns the `comp_mask` indicating which fields were actually populated by the driver.
@@ -818,7 +826,13 @@ mod tests {
                     // comp_mask must have RawClock set when the driver supports it
                     assert!(values.comp_mask().contains(ValuesMask::RawClock));
                     // A running device should have a non-zero clock
-                    assert!(values.raw_clock().as_nanos() > 0);
+                    assert!(
+                        values
+                            .raw_clock()
+                            .expect("RawClock bit set but raw_clock() returned None")
+                            .as_nanos()
+                            > 0
+                    );
                 },
                 Err(e) => {
                     // NotSupported is acceptable on some drivers / simulators
