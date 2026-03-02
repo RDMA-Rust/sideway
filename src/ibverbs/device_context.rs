@@ -7,7 +7,6 @@ use std::io;
 use std::mem::MaybeUninit;
 use std::ptr::{self, NonNull};
 use std::sync::Arc;
-use std::time::Duration;
 
 use bitmask_enum::bitmask;
 use rdma_mummy_sys::{
@@ -135,21 +134,43 @@ pub enum ValuesMask {
     RawClock = ibv_values_mask::IBV_VALUES_MASK_RAW_CLOCK.0 as _,
 }
 
+/// Raw hardware clock counter returned by [`DeviceContext::query_rt_values_ex`].
+///
+/// The two fields are the high and low halves of a free-running hardware tick counter in
+/// device-specific units. They are **not** wall-clock seconds and nanoseconds despite the
+/// underlying C `timespec` field names. To convert to real time, combine the parts and divide
+/// by the device clock frequency (`hca_core_clock` from `ibv_query_device_ex`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RawClock {
+    /// High part of the hardware counter (maps to `timespec.tv_sec` in the C struct).
+    pub counter_hi: u64,
+    /// Low part of the hardware counter (maps to `timespec.tv_nsec` in the C struct).
+    pub counter_lo: u64,
+}
+
+impl RawClock {
+    /// Combine both halves into a single 128-bit tick value.
+    pub fn to_ticks(&self) -> u128 {
+        ((self.counter_hi as u128) << 64) | (self.counter_lo as u128)
+    }
+}
+
 /// Real-time values queried from an RDMA device via [`DeviceContext::query_rt_values_ex`].
 pub struct RealTimeValues {
     inner: ibv_values_ex,
 }
 
 impl RealTimeValues {
-    /// Returns the raw hardware clock as a [`Duration`] since an arbitrary epoch (device boot or
-    /// reset), or [`None`] if [`ValuesMask::RawClock`] was not set in [`RealTimeValues::comp_mask`]
-    /// (i.e. the driver did not populate this field).
-    pub fn raw_clock(&self) -> Option<Duration> {
+    /// Returns the raw hardware clock counter, or [`None`] if [`ValuesMask::RawClock`] was not
+    /// set in [`RealTimeValues::comp_mask`] (i.e. the driver did not populate this field).
+    ///
+    /// See [`RawClock`] for details on how to interpret the returned value.
+    pub fn raw_clock(&self) -> Option<RawClock> {
         if self.comp_mask().contains(ValuesMask::RawClock) {
-            Some(Duration::new(
-                self.inner.raw_clock.tv_sec as u64,
-                self.inner.raw_clock.tv_nsec as u32,
-            ))
+            Some(RawClock {
+                counter_hi: self.inner.raw_clock.tv_sec as u64,
+                counter_lo: self.inner.raw_clock.tv_nsec as u64,
+            })
         } else {
             None
         }
@@ -826,12 +847,12 @@ mod tests {
                     // comp_mask must have RawClock set when the driver supports it
                     assert!(values.comp_mask().contains(ValuesMask::RawClock));
                     // A running device should have a non-zero clock
+                    let clock = values
+                        .raw_clock()
+                        .expect("RawClock bit set but raw_clock() returned None");
                     assert!(
-                        values
-                            .raw_clock()
-                            .expect("RawClock bit set but raw_clock() returned None")
-                            .as_nanos()
-                            > 0
+                        clock.counter_hi > 0 || clock.counter_lo > 0,
+                        "raw clock counter should be non-zero"
                     );
                 },
                 Err(e) => {
