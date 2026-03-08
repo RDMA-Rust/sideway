@@ -21,7 +21,9 @@ jobs:
         uses: actions-rust-lang/rustfmt@v1
       - name: Run tests
         run: |
-          sudo rmmod mlx5_ib
+          if modinfo mlx5_ib >/dev/null 2>&1 && lsmod | grep -q '^mlx5_ib'; then
+            sudo rmmod mlx5_ib
+          fi
           cd ${{ github.workspace }}
           sudo apt install libibverbs1 librdmacm1
           cargo clippy --all-targets -- -D warnings
