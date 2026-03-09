@@ -1,6 +1,6 @@
 [package]
 name = "sideway"
-version = "0.4.0"
+version = "0.4.1"
 description = "A better wrapper for using RDMA programming APIs in Rust flavor"
 license= "MPL-2.0"
 repository = "https://github.com/RDMA-Rust/sideway"

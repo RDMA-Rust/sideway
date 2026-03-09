@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1](https://github.com/RDMA-Rust/sideway/compare/v0.4.0...v0.4.1) - 2026-03-09
+
+### Fixed
+
+- *(ci)* guard mlx5_ib removal in test workflow
+- *(rdmacm)* use `or_insert_with()` to avoid eager `DeviceContext` creation
+
+### Other
+
+- *(deps)* bump rdma-mummy-sys to 0.2.3
+- *(cmtime)* remove unnecessary unwrap
+
 ## [0.4.0](https://github.com/RDMA-Rust/sideway/compare/v0.3.2...v0.4.0) - 2025-11-29
 
 ### Added
