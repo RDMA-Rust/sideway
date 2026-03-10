@@ -3,7 +3,7 @@ use sideway::ibverbs::device::{Device, DeviceInfo};
 
 use termtree::Tree;
 
-const FIELD_ALIGN: usize = 25;
+const FIELD_ALIGN: usize = 28;
 
 #[macro_export]
 macro_rules! aligned_field {
@@ -76,6 +76,90 @@ fn build_device_tree(device: &Device) -> Tree<String> {
         attr.vendor_part_id()
     ));
     device_tree.push(aligned_field!("hw_ver", fmt = "0x{:x}", attr.hardware_version()));
+    device_tree.push(aligned_field!("max_mr_size", fmt = "0x{:x}", attr.max_mr_size()));
+    device_tree.push(aligned_field!("page_size_cap", fmt = "0x{:x}", attr.page_size_cap()));
+    device_tree.push(aligned_field!("max_qp", attr.max_qp()));
+    device_tree.push(aligned_field!("max_qp_wr", attr.max_qp_wr()));
+    device_tree.push(aligned_field!(
+        "device_cap_flags",
+        fmt = "0x{:08x}",
+        attr.device_cap_flags().bits()
+    ));
+    device_tree.push(aligned_field!(
+        "device_cap_flags_names",
+        format!("{:?}", attr.device_cap_flags())
+    ));
+    device_tree.push(aligned_field!("max_sge", attr.max_sge()));
+    device_tree.push(aligned_field!("max_sge_rd", attr.max_sge_rd()));
+    device_tree.push(aligned_field!("max_cq", attr.max_cq()));
+    device_tree.push(aligned_field!("max_cqe", attr.max_cqe()));
+    device_tree.push(aligned_field!("max_mr", attr.max_mr()));
+    device_tree.push(aligned_field!("max_pd", attr.max_pd()));
+    device_tree.push(aligned_field!("max_qp_rd_atom", attr.max_qp_rd_atom()));
+    device_tree.push(aligned_field!("max_ee_rd_atom", attr.max_ee_rd_atom()));
+    device_tree.push(aligned_field!("max_res_rd_atom", attr.max_res_rd_atomic()));
+    device_tree.push(aligned_field!("max_qp_init_rd_atom", attr.max_qp_init_rd_atom()));
+    device_tree.push(aligned_field!("max_ee_init_rd_atom", attr.max_ee_init_rd_atom()));
+    device_tree.push(aligned_field!(
+        "atomic_cap",
+        format!("{:?} ({})", attr.atomic_capability(), attr.atomic_capability() as u32)
+    ));
+    device_tree.push(aligned_field!("max_ee", attr.max_ee()));
+    device_tree.push(aligned_field!("max_rdd", attr.max_rdd()));
+    device_tree.push(aligned_field!("max_mw", attr.max_mw()));
+    device_tree.push(aligned_field!("max_raw_ipv6_qp", attr.max_raw_ipv6_qp()));
+    device_tree.push(aligned_field!("max_raw_ethy_qp", attr.max_raw_ethy_qp()));
+    device_tree.push(aligned_field!("max_mcast_grp", attr.max_mcast_grp()));
+    device_tree.push(aligned_field!("max_mcast_qp_attach", attr.max_mcast_qp_attach()));
+    device_tree.push(aligned_field!(
+        "max_total_mcast_qp_attach",
+        attr.max_total_mcast_qp_attach()
+    ));
+    device_tree.push(aligned_field!("max_ah", attr.max_ah()));
+    device_tree.push(aligned_field!("max_fmr", attr.max_fmr()));
+    device_tree.push(aligned_field!("max_map_per_fmr", attr.max_map_per_fmr()));
+    device_tree.push(aligned_field!("max_srq", attr.max_srq()));
+    device_tree.push(aligned_field!("max_srq_wr", attr.max_srq_wr()));
+    device_tree.push(aligned_field!("max_srq_sge", attr.max_srq_sge()));
+    device_tree.push(aligned_field!("max_pkeys", attr.max_pkeys()));
+    device_tree.push(aligned_field!("local_ca_ack_delay", attr.local_ca_ack_delay()));
+    device_tree.push(aligned_field!(
+        "completion_ts_mask",
+        if attr.completion_timestamp_mask() == 0 {
+            "not supported".to_string()
+        } else {
+            format!("0x{:016x}", attr.completion_timestamp_mask())
+        }
+    ));
+    device_tree.push(aligned_field!(
+        "hca_core_clock",
+        if attr.hca_core_clock() == 0 {
+            "not supported".to_string()
+        } else {
+            format!("{} kHz", attr.hca_core_clock())
+        }
+    ));
+    let pci_atomic_caps = attr.pci_atomic_caps();
+    device_tree.push(aligned_field!(
+        "pci_atomic.fetch_add",
+        format!(
+            "{:?} (0x{:x})",
+            pci_atomic_caps.fetch_add(),
+            pci_atomic_caps.fetch_add().bits()
+        )
+    ));
+    device_tree.push(aligned_field!(
+        "pci_atomic.swap",
+        format!("{:?} (0x{:x})", pci_atomic_caps.swap(), pci_atomic_caps.swap().bits())
+    ));
+    device_tree.push(aligned_field!(
+        "pci_atomic.compare_swap",
+        format!(
+            "{:?} (0x{:x})",
+            pci_atomic_caps.compare_swap(),
+            pci_atomic_caps.compare_swap().bits()
+        )
+    ));
     device_tree.push(aligned_field!("phys_port_cnt", attr.phys_port_cnt()));
 
     // Add ports as subtrees
