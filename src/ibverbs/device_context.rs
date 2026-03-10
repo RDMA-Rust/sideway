@@ -529,7 +529,7 @@ impl PciAtomicCapabilities {
 
 /// The attributes of a port of an RDMA device context.
 pub struct PortAttr {
-    attr: ibv_port_attr,
+    pub attr: ibv_port_attr,
 }
 
 impl PortAttr {
@@ -1250,7 +1250,7 @@ mod tests {
     }
 
     #[test]
-    fn test_device_attr_getters_for_atomic_and_capability_fields() {
+    fn test_atomic_and_capability_fields() {
         let mut attr = unsafe { MaybeUninit::<ibv_device_attr_ex>::zeroed().assume_init() };
         attr.orig_attr.atomic_cap = ibv_atomic_cap::IBV_ATOMIC_HCA;
         attr.orig_attr.device_cap_flags =
@@ -1266,7 +1266,7 @@ mod tests {
     }
 
     #[test]
-    fn test_device_attr_getters_for_hca_core_clock_and_pci_atomic_caps() {
+    fn test_hca_core_clock_and_pci_atomic_caps() {
         let mut attr = unsafe { MaybeUninit::<ibv_device_attr_ex>::zeroed().assume_init() };
         attr.hca_core_clock = 987_654;
         attr.pci_atomic_caps.fetch_add = (ibv_pci_atomic_op_size::IBV_PCI_ATOMIC_OPERATION_4_BYTE_SIZE_SUP
@@ -1291,6 +1291,28 @@ mod tests {
             pci_atomic_caps.compare_swap(),
             PciAtomicOperationSize::Size4Byte | PciAtomicOperationSize::Size8Byte | PciAtomicOperationSize::Size16Byte
         );
+    }
+
+    #[test]
+    fn test_device_attr_raw_accessors() {
+        let mut attr = unsafe { MaybeUninit::<ibv_device_attr_ex>::zeroed().assume_init() };
+        attr.hca_core_clock = 123_456;
+        attr.orig_attr.max_qp = 1024;
+
+        let attr = DeviceAttr { attr };
+
+        assert_eq!(attr.attr.hca_core_clock, 123_456);
+        assert_eq!(attr.attr.orig_attr.max_qp, 1024);
+    }
+
+    #[test]
+    fn test_port_attr_raw_accessor() {
+        let mut attr = unsafe { MaybeUninit::<ibv_port_attr>::zeroed().assume_init() };
+        attr.gid_tbl_len = 128;
+
+        let port_attr = PortAttr { attr };
+
+        assert_eq!(port_attr.attr.gid_tbl_len, 128);
     }
 
     #[test]
