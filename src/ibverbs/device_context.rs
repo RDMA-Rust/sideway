@@ -10,11 +10,12 @@ use std::sync::Arc;
 
 use bitmask_enum::bitmask;
 use rdma_mummy_sys::{
-    ibv_alloc_pd, ibv_close_device, ibv_context, ibv_device_attr_ex, ibv_get_device_guid, ibv_get_device_name,
-    ibv_gid_entry, ibv_mtu, ibv_port_attr, ibv_port_state, ibv_query_device_ex, ibv_query_gid, ibv_query_gid_ex,
-    ibv_query_gid_table, ibv_query_gid_type, ibv_query_port, ibv_query_rt_values_ex, ibv_values_ex, ibv_values_mask,
-    IBV_GID_TYPE_IB, IBV_GID_TYPE_ROCE_V1, IBV_GID_TYPE_ROCE_V2, IBV_GID_TYPE_SYSFS_IB_ROCE_V1,
-    IBV_GID_TYPE_SYSFS_ROCE_V2, IBV_LINK_LAYER_ETHERNET, IBV_LINK_LAYER_INFINIBAND, IBV_LINK_LAYER_UNSPECIFIED,
+    ibv_alloc_pd, ibv_atomic_cap, ibv_close_device, ibv_context, ibv_device_attr_ex, ibv_device_cap_flags,
+    ibv_get_device_guid, ibv_get_device_name, ibv_gid_entry, ibv_mtu, ibv_pci_atomic_caps, ibv_pci_atomic_op_size,
+    ibv_port_attr, ibv_port_state, ibv_query_device_ex, ibv_query_gid, ibv_query_gid_ex, ibv_query_gid_table,
+    ibv_query_gid_type, ibv_query_port, ibv_query_rt_values_ex, ibv_values_ex, ibv_values_mask, IBV_GID_TYPE_IB,
+    IBV_GID_TYPE_ROCE_V1, IBV_GID_TYPE_ROCE_V2, IBV_GID_TYPE_SYSFS_IB_ROCE_V1, IBV_GID_TYPE_SYSFS_ROCE_V2,
+    IBV_LINK_LAYER_ETHERNET, IBV_LINK_LAYER_INFINIBAND, IBV_LINK_LAYER_UNSPECIFIED,
 };
 use serde::{Deserialize, Serialize};
 
@@ -444,6 +445,88 @@ impl From<u8> for PhysicalState {
     }
 }
 
+/// The atomic operation capability supported by this RDMA device.
+#[repr(u32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum AtomicCapability {
+    None = ibv_atomic_cap::IBV_ATOMIC_NONE,
+    HostChannelAdapter = ibv_atomic_cap::IBV_ATOMIC_HCA,
+    Global = ibv_atomic_cap::IBV_ATOMIC_GLOB,
+}
+
+impl From<u32> for AtomicCapability {
+    fn from(atomic_cap: u32) -> Self {
+        match atomic_cap {
+            ibv_atomic_cap::IBV_ATOMIC_NONE => AtomicCapability::None,
+            ibv_atomic_cap::IBV_ATOMIC_HCA => AtomicCapability::HostChannelAdapter,
+            ibv_atomic_cap::IBV_ATOMIC_GLOB => AtomicCapability::Global,
+            _ => panic!("Unknown atomic capability value: {atomic_cap}"),
+        }
+    }
+}
+
+/// The capabilities supported by this RDMA device.
+#[bitmask(u32)]
+#[bitmask_config(vec_debug)]
+pub enum DeviceCapabilityFlags {
+    ResizeMaxWorkRequest = ibv_device_cap_flags::IBV_DEVICE_RESIZE_MAX_WR.0 as _,
+    BadPartitionKeyCounter = ibv_device_cap_flags::IBV_DEVICE_BAD_PKEY_CNTR.0 as _,
+    BadQueueKeyCounter = ibv_device_cap_flags::IBV_DEVICE_BAD_QKEY_CNTR.0 as _,
+    RawMulticast = ibv_device_cap_flags::IBV_DEVICE_RAW_MULTI.0 as _,
+    AutoPathMigration = ibv_device_cap_flags::IBV_DEVICE_AUTO_PATH_MIG.0 as _,
+    ChangePhysicalPort = ibv_device_cap_flags::IBV_DEVICE_CHANGE_PHY_PORT.0 as _,
+    UnreliableDatagramAddressVectorPortEnforce = ibv_device_cap_flags::IBV_DEVICE_UD_AV_PORT_ENFORCE.0 as _,
+    CurrentQueuePairStateModification = ibv_device_cap_flags::IBV_DEVICE_CURR_QP_STATE_MOD.0 as _,
+    ShutdownPort = ibv_device_cap_flags::IBV_DEVICE_SHUTDOWN_PORT.0 as _,
+    InitType = ibv_device_cap_flags::IBV_DEVICE_INIT_TYPE.0 as _,
+    PortActiveEvent = ibv_device_cap_flags::IBV_DEVICE_PORT_ACTIVE_EVENT.0 as _,
+    SystemImageGuid = ibv_device_cap_flags::IBV_DEVICE_SYS_IMAGE_GUID.0 as _,
+    ReliableConnectionReceiverNotReadyNakGeneration = ibv_device_cap_flags::IBV_DEVICE_RC_RNR_NAK_GEN.0 as _,
+    SharedReceiveQueueResize = ibv_device_cap_flags::IBV_DEVICE_SRQ_RESIZE.0 as _,
+    NotifyCompletionQueueCount = ibv_device_cap_flags::IBV_DEVICE_N_NOTIFY_CQ.0 as _,
+    MemoryWindow = ibv_device_cap_flags::IBV_DEVICE_MEM_WINDOW.0 as _,
+    UnreliableDatagramIpChecksum = ibv_device_cap_flags::IBV_DEVICE_UD_IP_CSUM.0 as _,
+    ExtendedReliableConnection = ibv_device_cap_flags::IBV_DEVICE_XRC.0 as _,
+    MemoryManagementExtensions = ibv_device_cap_flags::IBV_DEVICE_MEM_MGT_EXTENSIONS.0 as _,
+    MemoryWindowType2A = ibv_device_cap_flags::IBV_DEVICE_MEM_WINDOW_TYPE_2A.0 as _,
+    MemoryWindowType2B = ibv_device_cap_flags::IBV_DEVICE_MEM_WINDOW_TYPE_2B.0 as _,
+    ReliableConnectionIpChecksum = ibv_device_cap_flags::IBV_DEVICE_RC_IP_CSUM.0 as _,
+    RawIpChecksum = ibv_device_cap_flags::IBV_DEVICE_RAW_IP_CSUM.0 as _,
+    ManagedFlowSteering = ibv_device_cap_flags::IBV_DEVICE_MANAGED_FLOW_STEERING.0 as _,
+}
+
+/// The supported PCI atomic operation sizes.
+#[bitmask(u16)]
+#[bitmask_config(vec_debug)]
+pub enum PciAtomicOperationSize {
+    Size4Byte = ibv_pci_atomic_op_size::IBV_PCI_ATOMIC_OPERATION_4_BYTE_SIZE_SUP.0 as _,
+    Size8Byte = ibv_pci_atomic_op_size::IBV_PCI_ATOMIC_OPERATION_8_BYTE_SIZE_SUP.0 as _,
+    Size16Byte = ibv_pci_atomic_op_size::IBV_PCI_ATOMIC_OPERATION_16_BYTE_SIZE_SUP.0 as _,
+}
+
+/// The PCI atomic operation capabilities supported by this RDMA device.
+#[derive(Clone, Copy)]
+pub struct PciAtomicCapabilities {
+    caps: ibv_pci_atomic_caps,
+}
+
+impl PciAtomicCapabilities {
+    /// Get the supported operation sizes for PCI fetch-add.
+    pub fn fetch_add(&self) -> PciAtomicOperationSize {
+        PciAtomicOperationSize::from(self.caps.fetch_add)
+    }
+
+    /// Get the supported operation sizes for PCI swap.
+    pub fn swap(&self) -> PciAtomicOperationSize {
+        PciAtomicOperationSize::from(self.caps.swap)
+    }
+
+    /// Get the supported operation sizes for PCI compare-and-swap.
+    pub fn compare_swap(&self) -> PciAtomicOperationSize {
+        PciAtomicOperationSize::from(self.caps.compare_swap)
+    }
+}
+
 /// The attributes of a port of an RDMA device context.
 pub struct PortAttr {
     attr: ibv_port_attr,
@@ -492,6 +575,16 @@ impl PortAttr {
         }
         (self.attr.active_speed as u32).into()
     }
+
+    /// Get the base port LID of this port.
+    pub fn lid(&self) -> u16 {
+        self.attr.lid
+    }
+
+    /// Get the LID of the SM that manages this port.
+    pub fn sm_lid(&self) -> u16 {
+        self.attr.sm_lid
+    }
 }
 
 /// The attributes of an RDMA device that is associated with a context.
@@ -509,6 +602,18 @@ impl DeviceAttr {
     /// timestamp.
     pub fn completion_timestamp_mask(&self) -> u64 {
         self.attr.completion_timestamp_mask
+    }
+
+    /// Get the HCA core clock frequency in KHz.
+    pub fn hca_core_clock(&self) -> u64 {
+        self.attr.hca_core_clock
+    }
+
+    /// Get the supported PCI atomic operation capabilities.
+    pub fn pci_atomic_caps(&self) -> PciAtomicCapabilities {
+        PciAtomicCapabilities {
+            caps: self.attr.pci_atomic_caps,
+        }
     }
 
     /// Get the IEEE device's vendor.
@@ -537,10 +642,182 @@ impl DeviceAttr {
         self.attr.orig_attr.hw_ver
     }
 
+    /// Get the node [`Guid`] associated with this RDMA device.
+    pub fn node_guid(&self) -> Guid {
+        Guid(self.attr.orig_attr.node_guid)
+    }
+
     /// Get the [`Guid`] associated with this RDMA device and other devices which are part of a
     /// single system.
     pub fn sys_image_guid(&self) -> Guid {
         Guid(self.attr.orig_attr.sys_image_guid)
+    }
+
+    /// Get the maximum size of a memory region in bytes.
+    pub fn max_mr_size(&self) -> u64 {
+        self.attr.orig_attr.max_mr_size
+    }
+
+    /// Get the page size bitmap that can be supported by this device.
+    pub fn page_size_cap(&self) -> u64 {
+        self.attr.orig_attr.page_size_cap
+    }
+
+    /// Get the maximum number of Queue Pairs this device supports.
+    pub fn max_qp(&self) -> i32 {
+        self.attr.orig_attr.max_qp
+    }
+
+    /// Get the maximum number of outstanding work requests per Queue Pair.
+    pub fn max_qp_wr(&self) -> i32 {
+        self.attr.orig_attr.max_qp_wr
+    }
+
+    /// Get the capability flags supported by this device.
+    pub fn device_cap_flags(&self) -> DeviceCapabilityFlags {
+        DeviceCapabilityFlags::from(self.attr.orig_attr.device_cap_flags)
+    }
+
+    /// Get the maximum number of scatter / gather entries per work request.
+    pub fn max_sge(&self) -> i32 {
+        self.attr.orig_attr.max_sge
+    }
+
+    /// Get the maximum number of scatter / gather entries per RDMA read request.
+    pub fn max_sge_rd(&self) -> i32 {
+        self.attr.orig_attr.max_sge_rd
+    }
+
+    /// Get the maximum number of completion queues this device supports.
+    pub fn max_cq(&self) -> i32 {
+        self.attr.orig_attr.max_cq
+    }
+
+    /// Get the maximum number of completion queue entries per completion queue.
+    pub fn max_cqe(&self) -> i32 {
+        self.attr.orig_attr.max_cqe
+    }
+
+    /// Get the maximum number of memory regions this device supports.
+    pub fn max_mr(&self) -> i32 {
+        self.attr.orig_attr.max_mr
+    }
+
+    /// Get the maximum number of protection domains this device supports.
+    pub fn max_pd(&self) -> i32 {
+        self.attr.orig_attr.max_pd
+    }
+
+    /// Get the maximum number of outstanding RDMA read and atomic operations per Queue Pair.
+    pub fn max_qp_rd_atom(&self) -> i32 {
+        self.attr.orig_attr.max_qp_rd_atom
+    }
+
+    /// Get the maximum number of outstanding RDMA read and atomic operations per EE context.
+    pub fn max_ee_rd_atom(&self) -> i32 {
+        self.attr.orig_attr.max_ee_rd_atom
+    }
+
+    /// Get the maximum number of resources for outstanding RDMA read and atomic operations.
+    pub fn max_res_rd_atomic(&self) -> i32 {
+        self.attr.orig_attr.max_res_rd_atom
+    }
+
+    /// Get the maximum number of RDMA read and atomic operations that can be initiated by a Queue
+    /// Pair.
+    pub fn max_qp_init_rd_atom(&self) -> i32 {
+        self.attr.orig_attr.max_qp_init_rd_atom
+    }
+
+    /// Get the maximum number of RDMA read and atomic operations that can be initiated by an EE
+    /// context.
+    pub fn max_ee_init_rd_atom(&self) -> i32 {
+        self.attr.orig_attr.max_ee_init_rd_atom
+    }
+
+    /// Get the atomic operation capability supported by this device.
+    pub fn atomic_capability(&self) -> AtomicCapability {
+        self.attr.orig_attr.atomic_cap.into()
+    }
+
+    /// Get the maximum number of EE contexts this device supports.
+    pub fn max_ee(&self) -> i32 {
+        self.attr.orig_attr.max_ee
+    }
+
+    /// Get the maximum number of RDDs this device supports.
+    pub fn max_rdd(&self) -> i32 {
+        self.attr.orig_attr.max_rdd
+    }
+
+    /// Get the maximum number of memory windows this device supports.
+    pub fn max_mw(&self) -> i32 {
+        self.attr.orig_attr.max_mw
+    }
+
+    /// Get the maximum number of raw IPv6 Queue Pairs this device supports.
+    pub fn max_raw_ipv6_qp(&self) -> i32 {
+        self.attr.orig_attr.max_raw_ipv6_qp
+    }
+
+    /// Get the maximum number of raw Ethernet Queue Pairs this device supports.
+    pub fn max_raw_ethy_qp(&self) -> i32 {
+        self.attr.orig_attr.max_raw_ethy_qp
+    }
+
+    /// Get the maximum number of multicast groups this device supports.
+    pub fn max_mcast_grp(&self) -> i32 {
+        self.attr.orig_attr.max_mcast_grp
+    }
+
+    /// Get the maximum number of Queue Pairs that can be attached to a multicast group.
+    pub fn max_mcast_qp_attach(&self) -> i32 {
+        self.attr.orig_attr.max_mcast_qp_attach
+    }
+
+    /// Get the maximum total number of Queue Pair multicast attachments.
+    pub fn max_total_mcast_qp_attach(&self) -> i32 {
+        self.attr.orig_attr.max_total_mcast_qp_attach
+    }
+
+    /// Get the maximum number of address handles this device supports.
+    pub fn max_ah(&self) -> i32 {
+        self.attr.orig_attr.max_ah
+    }
+
+    /// Get the maximum number of Fast Memory Regions this device supports.
+    pub fn max_fmr(&self) -> i32 {
+        self.attr.orig_attr.max_fmr
+    }
+
+    /// Get the maximum number of page mappings per Fast Memory Region.
+    pub fn max_map_per_fmr(&self) -> i32 {
+        self.attr.orig_attr.max_map_per_fmr
+    }
+
+    /// Get the maximum number of shared receive queues this device supports.
+    pub fn max_srq(&self) -> i32 {
+        self.attr.orig_attr.max_srq
+    }
+
+    /// Get the maximum number of outstanding work requests per shared receive queue.
+    pub fn max_srq_wr(&self) -> i32 {
+        self.attr.orig_attr.max_srq_wr
+    }
+
+    /// Get the maximum number of scatter / gather entries per shared receive queue work request.
+    pub fn max_srq_sge(&self) -> i32 {
+        self.attr.orig_attr.max_srq_sge
+    }
+
+    /// Get the maximum number of supported PKEY entries per port.
+    pub fn max_pkeys(&self) -> u16 {
+        self.attr.orig_attr.max_pkeys
+    }
+
+    /// Get the local CA ACK delay.
+    pub fn local_ca_ack_delay(&self) -> u8 {
+        self.attr.orig_attr.local_ca_ack_delay
     }
 }
 
@@ -970,6 +1247,50 @@ mod tests {
         assert_eq!(PhysicalState::from(5), PhysicalState::LinkUp);
         assert_eq!(PhysicalState::from(6), PhysicalState::LinkErrorRecovery);
         assert_eq!(PhysicalState::from(7), PhysicalState::PhyTest);
+    }
+
+    #[test]
+    fn test_device_attr_getters_for_atomic_and_capability_fields() {
+        let mut attr = unsafe { MaybeUninit::<ibv_device_attr_ex>::zeroed().assume_init() };
+        attr.orig_attr.atomic_cap = ibv_atomic_cap::IBV_ATOMIC_HCA;
+        attr.orig_attr.device_cap_flags =
+            (ibv_device_cap_flags::IBV_DEVICE_RESIZE_MAX_WR | ibv_device_cap_flags::IBV_DEVICE_RAW_MULTI).0;
+
+        let attr = DeviceAttr { attr };
+
+        assert_eq!(attr.atomic_capability(), AtomicCapability::HostChannelAdapter);
+        assert_eq!(
+            attr.device_cap_flags(),
+            DeviceCapabilityFlags::ResizeMaxWorkRequest | DeviceCapabilityFlags::RawMulticast
+        );
+    }
+
+    #[test]
+    fn test_device_attr_getters_for_hca_core_clock_and_pci_atomic_caps() {
+        let mut attr = unsafe { MaybeUninit::<ibv_device_attr_ex>::zeroed().assume_init() };
+        attr.hca_core_clock = 987_654;
+        attr.pci_atomic_caps.fetch_add = (ibv_pci_atomic_op_size::IBV_PCI_ATOMIC_OPERATION_4_BYTE_SIZE_SUP
+            | ibv_pci_atomic_op_size::IBV_PCI_ATOMIC_OPERATION_8_BYTE_SIZE_SUP)
+            .0 as u16;
+        attr.pci_atomic_caps.swap = ibv_pci_atomic_op_size::IBV_PCI_ATOMIC_OPERATION_16_BYTE_SIZE_SUP.0 as u16;
+        attr.pci_atomic_caps.compare_swap = (ibv_pci_atomic_op_size::IBV_PCI_ATOMIC_OPERATION_4_BYTE_SIZE_SUP
+            | ibv_pci_atomic_op_size::IBV_PCI_ATOMIC_OPERATION_8_BYTE_SIZE_SUP
+            | ibv_pci_atomic_op_size::IBV_PCI_ATOMIC_OPERATION_16_BYTE_SIZE_SUP)
+            .0 as u16;
+
+        let attr = DeviceAttr { attr };
+        let pci_atomic_caps = attr.pci_atomic_caps();
+
+        assert_eq!(attr.hca_core_clock(), 987_654);
+        assert_eq!(
+            pci_atomic_caps.fetch_add(),
+            PciAtomicOperationSize::Size4Byte | PciAtomicOperationSize::Size8Byte
+        );
+        assert_eq!(pci_atomic_caps.swap(), PciAtomicOperationSize::Size16Byte);
+        assert_eq!(
+            pci_atomic_caps.compare_swap(),
+            PciAtomicOperationSize::Size4Byte | PciAtomicOperationSize::Size8Byte | PciAtomicOperationSize::Size16Byte
+        );
     }
 
     #[test]
