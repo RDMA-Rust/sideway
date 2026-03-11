@@ -876,7 +876,7 @@ impl QueuePairBuilder {
                     recv_cq: self.init_attr.recv_cq,
                     srq: null_mut(),
                     cap: self.init_attr.cap,
-                    qp_type: QueuePairType::ReliableConnection as _,
+                    qp_type: self.init_attr.qp_type,
                     sq_sig_all: 0,
                 },
             )
