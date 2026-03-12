@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.2](https://github.com/RDMA-Rust/sideway/compare/v0.4.1...v0.4.2) - 2026-03-12
+
+### Added
+
+- Adding ibv_query_rt_values_ex verb
+
+### Fixed
+
+- *(ibverbs)* propagate configured qp_type in QueuePairBuilder::build
+
+### Other
+
+- return Option<Duration> from RealTimeValues::raw_clock
+- Renaming Rt to RealTime
+- Update src/ibverbs/device_context.rs
+- Adding ibv_query_rt_values_ex verb
+
 ## [0.4.1](https://github.com/RDMA-Rust/sideway/compare/v0.4.0...v0.4.1) - 2026-03-09
 
 ### Fixed
