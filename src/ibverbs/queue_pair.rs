@@ -1162,9 +1162,14 @@ impl QueuePairBuilder {
 
         let qp = unsafe { ibv_create_qp_ex((*(attr.pd)).context, &mut attr) };
 
+        if qp.is_null() {
+            return Err(CreateQueuePairErrorKind::Ibverbs(io::Error::last_os_error()).into());
+        }
+
+        let qp_ex = NonNull::new(unsafe { ibv_qp_to_qp_ex(qp) }).unwrap();
+
         Ok(ExtendedQueuePair {
-            qp_ex: NonNull::new(unsafe { ibv_qp_to_qp_ex(qp) })
-                .ok_or::<CreateQueuePairError>(CreateQueuePairErrorKind::Ibverbs(io::Error::last_os_error()).into())?,
+            qp_ex,
             _pd: Arc::clone(&self.pd),
             _send_cq: send_cq,
             _recv_cq: recv_cq,
