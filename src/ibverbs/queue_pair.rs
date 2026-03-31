@@ -943,6 +943,21 @@ impl QueuePairAttribute {
         }
     }
 
+    /// Get mutable raw pointer to the underlying `ibv_qp_attr`.
+    pub fn as_raw_ptr(&mut self) -> *mut ibv_qp_attr {
+        &mut self.attr
+    }
+
+    /// Get const raw pointer to the underlying `ibv_qp_attr`.
+    pub fn as_raw_ptr_const(&self) -> *const ibv_qp_attr {
+        &self.attr
+    }
+
+    /// Get the accumulated attribute mask as a raw integer for `ibv_modify_qp`.
+    pub fn attr_mask_raw(&self) -> i32 {
+        self.attr_mask.bits as i32
+    }
+
     /// Initialize attr from an existing one, this is useful when we interact with RDMA CM, or other
     /// existing libraries.
     pub fn from(attr: &ibv_qp_attr, attr_mask: i32) -> Self {

@@ -230,6 +230,15 @@ impl DcQpBuilder {
 }
 
 impl DcInitiator {
+    /// Modify QP state.
+    pub fn modify(&mut self, attr: &crate::ibverbs::queue_pair::QueuePairAttribute) -> Result<(), std::io::Error> {
+        let mut qp_attr = unsafe { std::ptr::read(attr.as_raw_ptr_const()) };
+        let ret = unsafe {
+            rdma_mummy_sys::ibv_modify_qp(self.qp.as_ptr(), &mut qp_attr, attr.attr_mask_raw())
+        };
+        if ret == 0 { Ok(()) } else { Err(std::io::Error::last_os_error()) }
+    }
+
     /// QP number.
     pub fn qp_number(&self) -> u32 {
         unsafe { (*self.qp.as_ptr()).qp_num }
@@ -262,6 +271,15 @@ impl DcInitiator {
 }
 
 impl DcTarget {
+    /// Modify QP state.
+    pub fn modify(&mut self, attr: &crate::ibverbs::queue_pair::QueuePairAttribute) -> Result<(), std::io::Error> {
+        let mut qp_attr = unsafe { std::ptr::read(attr.as_raw_ptr_const()) };
+        let ret = unsafe {
+            rdma_mummy_sys::ibv_modify_qp(self.qp.as_ptr(), &mut qp_attr, attr.attr_mask_raw())
+        };
+        if ret == 0 { Ok(()) } else { Err(std::io::Error::last_os_error()) }
+    }
+
     /// QP number (DCTN — used by DCI to address this target).
     pub fn dctn(&self) -> u32 {
         self.dctn
