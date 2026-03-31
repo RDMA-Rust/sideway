@@ -11,7 +11,7 @@
 //! - N nodes need 1 DCT + W DCIs per node (vs N×C QPs with RC)
 
 mod context;
-mod dc;
+pub mod dc;
 
 pub use context::Mlx5Context;
 pub use dc::{DcInitiator, DcTarget, DcType};

@@ -26,21 +26,30 @@ pub enum DcType {
 
 /// DC Initiator QP. Can send RDMA WRITE/READ to any DCT by specifying
 /// the target address per work request via `wr_set_dc_addr()`.
+///
+/// Drop order: QP destroyed first (via ibv_destroy_qp), then CQs freed.
 pub struct DcInitiator {
     qp: NonNull<rdma_mummy_sys::ibv_qp>,
     qp_ex: NonNull<rdma_mummy_sys::ibv_qp_ex>,
     mlx5_qp_ex: NonNull<mlx5dv::mlx5dv_qp_ex>,
     _pd: Arc<ProtectionDomain>,
+    // CQs held to ensure they outlive the QP (Rust drops fields in declaration order)
+    _send_cq: GenericCompletionQueue,
+    _recv_cq: GenericCompletionQueue,
 }
 
 unsafe impl Send for DcInitiator {}
 unsafe impl Sync for DcInitiator {}
 
 /// DC Target QP. Listens for incoming RDMA operations from any DCI.
+///
+/// Drop order: QP destroyed first, then CQs freed.
 pub struct DcTarget {
     qp: NonNull<rdma_mummy_sys::ibv_qp>,
     dctn: u32,
     _pd: Arc<ProtectionDomain>,
+    _send_cq: GenericCompletionQueue,
+    _recv_cq: GenericCompletionQueue,
 }
 
 unsafe impl Send for DcTarget {}
@@ -52,6 +61,7 @@ pub struct DcQpBuilder {
     dc_type: DcType,
     send_cq: Option<GenericCompletionQueue>,
     recv_cq: Option<GenericCompletionQueue>,
+    srq: Option<*mut rdma_mummy_sys::ibv_srq>,
     max_send_wr: u32,
     max_recv_wr: u32,
     max_send_sge: u32,
@@ -66,6 +76,7 @@ impl DcQpBuilder {
             dc_type,
             send_cq: None,
             recv_cq: None,
+            srq: None,
             max_send_wr: 128,
             max_recv_wr: 128,
             max_send_sge: 1,
@@ -94,6 +105,15 @@ impl DcQpBuilder {
         self
     }
 
+    /// Set the SRQ for DCT (required for DC Target).
+    ///
+    /// # Safety
+    /// The SRQ must outlive the QP.
+    pub unsafe fn srq(mut self, srq: *mut rdma_mummy_sys::ibv_srq) -> Self {
+        self.srq = Some(srq);
+        self
+    }
+
     pub fn dc_access_key(mut self, key: u64) -> Self {
         self.dc_access_key = key;
         self
@@ -115,9 +135,8 @@ impl DcQpBuilder {
         qp_attr.recv_cq = recv_cq_ptr;
         qp_attr.pd = self.pd.pd.as_ptr();
         qp_attr.cap.max_send_wr = self.max_send_wr;
-        qp_attr.cap.max_recv_wr = self.max_recv_wr;
+        qp_attr.cap.max_recv_wr = 0; // DCI doesn't receive
         qp_attr.cap.max_send_sge = self.max_send_sge;
-        qp_attr.cap.max_recv_sge = self.max_recv_sge;
         qp_attr.comp_mask = (ibv_qp_init_attr_mask::IBV_QP_INIT_ATTR_PD
             | ibv_qp_init_attr_mask::IBV_QP_INIT_ATTR_SEND_OPS_FLAGS).0;
         qp_attr.send_ops_flags = (ibv_qp_create_send_ops_flags::IBV_QP_EX_WITH_RDMA_WRITE
@@ -128,7 +147,6 @@ impl DcQpBuilder {
         mlx5_attr.comp_mask = mlx5dv::MLX5DV_QP_INIT_ATTR_MASK_DC as u64;
         mlx5_attr.dc_init_attr.dc_type = mlx5dv::MLX5DV_DCTYPE_DCI as u32;
 
-        // mlx5dv_create_qp takes its own ibv_* types — cast through raw pointers
         let qp_ptr = unsafe {
             mlx5dv::mlx5dv_create_qp(
                 self.pd._dev_ctx.context.as_ptr().cast(),
@@ -137,9 +155,9 @@ impl DcQpBuilder {
             )
         };
         if qp_ptr.is_null() {
-            return Err(DcError::CreateFailed);
+            let errno = std::io::Error::last_os_error();
+            return Err(DcError::CreateFailedWithErrno(errno));
         }
-        // Cast back to the main crate's ibv_qp type
         let qp = NonNull::new(qp_ptr.cast::<rdma_mummy_sys::ibv_qp>()).unwrap();
 
         let qp_ex_ptr = unsafe { rdma_mummy_sys::ibv_qp_to_qp_ex(qp.as_ptr()) };
@@ -156,15 +174,18 @@ impl DcQpBuilder {
             qp_ex,
             mlx5_qp_ex,
             _pd: self.pd,
+            _send_cq: send_cq,
+            _recv_cq: recv_cq,
         })
     }
 
-    /// Build a DC Target QP.
+    /// Build a DC Target QP. Requires SRQ to be set.
     pub fn build_dct(self) -> Result<DcTarget, DcError> {
         assert!(matches!(self.dc_type, DcType::Target));
 
         let send_cq = self.send_cq.ok_or(DcError::MissingSendCq)?;
         let recv_cq = self.recv_cq.ok_or(DcError::MissingRecvCq)?;
+        let srq = self.srq.ok_or(DcError::MissingSrq)?;
 
         let send_cq_ptr = cq_raw_ptr(&send_cq);
         let recv_cq_ptr = cq_raw_ptr(&recv_cq);
@@ -173,9 +194,10 @@ impl DcQpBuilder {
         qp_attr.qp_type = ibv_qp_type::IBV_QPT_DRIVER;
         qp_attr.send_cq = send_cq_ptr;
         qp_attr.recv_cq = recv_cq_ptr;
+        qp_attr.srq = srq;
         qp_attr.pd = self.pd.pd.as_ptr();
-        qp_attr.cap.max_recv_wr = self.max_recv_wr;
-        qp_attr.cap.max_recv_sge = self.max_recv_sge;
+        qp_attr.cap.max_recv_wr = 0;
+        qp_attr.cap.max_recv_sge = 1;
         qp_attr.comp_mask = ibv_qp_init_attr_mask::IBV_QP_INIT_ATTR_PD.0;
 
         let mut mlx5_attr: mlx5dv::mlx5dv_qp_init_attr = unsafe { std::mem::zeroed() };
@@ -191,7 +213,8 @@ impl DcQpBuilder {
             )
         };
         if qp_ptr.is_null() {
-            return Err(DcError::CreateFailed);
+            let errno = std::io::Error::last_os_error();
+            return Err(DcError::CreateFailedWithErrno(errno));
         }
         let qp = NonNull::new(qp_ptr.cast::<rdma_mummy_sys::ibv_qp>()).unwrap();
         let dctn = unsafe { (*qp.as_ptr()).qp_num };
@@ -200,6 +223,8 @@ impl DcQpBuilder {
             qp,
             dctn,
             _pd: self.pd,
+            _send_cq: send_cq,
+            _recv_cq: recv_cq,
         })
     }
 }
@@ -266,8 +291,8 @@ impl Drop for DcTarget {
 
 #[derive(Debug, thiserror::Error)]
 pub enum DcError {
-    #[error("mlx5dv_create_qp failed")]
-    CreateFailed,
+    #[error("mlx5dv_create_qp failed: {0}")]
+    CreateFailedWithErrno(std::io::Error),
     #[error("ibv_qp_to_qp_ex failed")]
     ExtendedQpFailed,
     #[error("mlx5dv_qp_ex_from_ibv_qp_ex failed")]
@@ -276,4 +301,6 @@ pub enum DcError {
     MissingSendCq,
     #[error("recv CQ not set")]
     MissingRecvCq,
+    #[error("SRQ not set (required for DCT)")]
+    MissingSrq,
 }
