@@ -21,9 +21,7 @@ impl Mlx5Context {
             | mlx5dv::MLX5DV_CONTEXT_MASK_DCI_STREAMS
             | mlx5dv::MLX5DV_CONTEXT_MASK_MAX_DC_RD_ATOM) as u64;
 
-        let ret = unsafe {
-            mlx5dv::mlx5dv_query_device(self.dev_ctx.context.as_ptr().cast(), &mut attrs)
-        };
+        let ret = unsafe { mlx5dv::mlx5dv_query_device(self.dev_ctx.context.as_ptr().cast(), &mut attrs) };
         if ret != 0 {
             return Err(std::io::Error::last_os_error());
         }

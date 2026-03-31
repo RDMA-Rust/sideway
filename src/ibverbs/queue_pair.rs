@@ -955,7 +955,7 @@ impl QueuePairAttribute {
 
     /// Get the accumulated attribute mask as a raw integer for `ibv_modify_qp`.
     pub fn attr_mask_raw(&self) -> i32 {
-        self.attr_mask.bits as i32
+        self.attr_mask.bits
     }
 
     /// Initialize attr from an existing one, this is useful when we interact with RDMA CM, or other

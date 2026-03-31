@@ -1,7 +1,5 @@
 use rdma_mummy_sys::mlx5dv;
-use rdma_mummy_sys::{
-    ibv_qp_init_attr_mask, ibv_qp_create_send_ops_flags, ibv_qp_type,
-};
+use rdma_mummy_sys::{ibv_qp_create_send_ops_flags, ibv_qp_init_attr_mask, ibv_qp_type};
 use std::ptr::NonNull;
 use std::sync::Arc;
 
@@ -46,7 +44,6 @@ unsafe impl Sync for DcInitiator {}
 /// Drop order: QP destroyed first, then CQs freed.
 pub struct DcTarget {
     qp: NonNull<rdma_mummy_sys::ibv_qp>,
-    dctn: u32,
     _pd: Arc<ProtectionDomain>,
     _send_cq: GenericCompletionQueue,
     _recv_cq: GenericCompletionQueue,
@@ -137,11 +134,12 @@ impl DcQpBuilder {
         qp_attr.cap.max_send_wr = self.max_send_wr;
         qp_attr.cap.max_recv_wr = 0; // DCI doesn't receive
         qp_attr.cap.max_send_sge = self.max_send_sge;
-        qp_attr.comp_mask = (ibv_qp_init_attr_mask::IBV_QP_INIT_ATTR_PD
-            | ibv_qp_init_attr_mask::IBV_QP_INIT_ATTR_SEND_OPS_FLAGS).0;
+        qp_attr.comp_mask =
+            (ibv_qp_init_attr_mask::IBV_QP_INIT_ATTR_PD | ibv_qp_init_attr_mask::IBV_QP_INIT_ATTR_SEND_OPS_FLAGS).0;
         qp_attr.send_ops_flags = (ibv_qp_create_send_ops_flags::IBV_QP_EX_WITH_RDMA_WRITE
             | ibv_qp_create_send_ops_flags::IBV_QP_EX_WITH_RDMA_READ
-            | ibv_qp_create_send_ops_flags::IBV_QP_EX_WITH_SEND).0 as u64;
+            | ibv_qp_create_send_ops_flags::IBV_QP_EX_WITH_SEND)
+            .0 as u64;
 
         let mut mlx5_attr: mlx5dv::mlx5dv_qp_init_attr = unsafe { std::mem::zeroed() };
         mlx5_attr.comp_mask = mlx5dv::MLX5DV_QP_INIT_ATTR_MASK_DC as u64;
@@ -164,9 +162,7 @@ impl DcQpBuilder {
         let qp_ex = NonNull::new(qp_ex_ptr).ok_or(DcError::ExtendedQpFailed)?;
 
         // Get mlx5 extended QP for DC addressing — cast qp_ex to mlx5dv's type
-        let mlx5_qp_ex_ptr = unsafe {
-            mlx5dv::mlx5dv_qp_ex_from_ibv_qp_ex(qp_ex.as_ptr().cast())
-        };
+        let mlx5_qp_ex_ptr = unsafe { mlx5dv::mlx5dv_qp_ex_from_ibv_qp_ex(qp_ex.as_ptr().cast()) };
         let mlx5_qp_ex = NonNull::new(mlx5_qp_ex_ptr).ok_or(DcError::Mlx5QpExFailed)?;
 
         Ok(DcInitiator {
@@ -217,11 +213,9 @@ impl DcQpBuilder {
             return Err(DcError::CreateFailedWithErrno(errno));
         }
         let qp = NonNull::new(qp_ptr.cast::<rdma_mummy_sys::ibv_qp>()).unwrap();
-        let dctn = unsafe { (*qp.as_ptr()).qp_num };
 
         Ok(DcTarget {
             qp,
-            dctn,
             _pd: self.pd,
             _send_cq: send_cq,
             _recv_cq: recv_cq,
@@ -233,10 +227,12 @@ impl DcInitiator {
     /// Modify QP state.
     pub fn modify(&mut self, attr: &crate::ibverbs::queue_pair::QueuePairAttribute) -> Result<(), std::io::Error> {
         let mut qp_attr = unsafe { std::ptr::read(attr.as_raw_ptr_const()) };
-        let ret = unsafe {
-            rdma_mummy_sys::ibv_modify_qp(self.qp.as_ptr(), &mut qp_attr, attr.attr_mask_raw())
-        };
-        if ret == 0 { Ok(()) } else { Err(std::io::Error::last_os_error()) }
+        let ret = unsafe { rdma_mummy_sys::ibv_modify_qp(self.qp.as_ptr(), &mut qp_attr, attr.attr_mask_raw()) };
+        if ret == 0 {
+            Ok(())
+        } else {
+            Err(std::io::Error::last_os_error())
+        }
     }
 
     /// QP number.
@@ -249,12 +245,7 @@ impl DcInitiator {
     ///
     /// # Safety
     /// The address handle must be valid and the remote DCTN must be reachable.
-    pub unsafe fn wr_set_dc_addr(
-        &mut self,
-        ah: *mut rdma_mummy_sys::ibv_ah,
-        remote_dctn: u32,
-        dc_key: u64,
-    ) {
+    pub unsafe fn wr_set_dc_addr(&mut self, ah: *mut rdma_mummy_sys::ibv_ah, remote_dctn: u32, dc_key: u64) {
         let fn_ptr = (*self.mlx5_qp_ex.as_ptr()).wr_set_dc_addr.unwrap();
         fn_ptr(self.mlx5_qp_ex.as_ptr(), ah.cast(), remote_dctn, dc_key);
     }
@@ -274,15 +265,18 @@ impl DcTarget {
     /// Modify QP state.
     pub fn modify(&mut self, attr: &crate::ibverbs::queue_pair::QueuePairAttribute) -> Result<(), std::io::Error> {
         let mut qp_attr = unsafe { std::ptr::read(attr.as_raw_ptr_const()) };
-        let ret = unsafe {
-            rdma_mummy_sys::ibv_modify_qp(self.qp.as_ptr(), &mut qp_attr, attr.attr_mask_raw())
-        };
-        if ret == 0 { Ok(()) } else { Err(std::io::Error::last_os_error()) }
+        let ret = unsafe { rdma_mummy_sys::ibv_modify_qp(self.qp.as_ptr(), &mut qp_attr, attr.attr_mask_raw()) };
+        if ret == 0 {
+            Ok(())
+        } else {
+            Err(std::io::Error::last_os_error())
+        }
     }
 
     /// QP number (DCTN — used by DCI to address this target).
+    /// Only valid after transitioning to RTR state.
     pub fn dctn(&self) -> u32 {
-        self.dctn
+        unsafe { (*self.qp.as_ptr()).qp_num }
     }
 
     /// Get raw ibv_qp pointer for state transitions.
