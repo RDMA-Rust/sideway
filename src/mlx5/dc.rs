@@ -193,7 +193,7 @@ impl DcQpBuilder {
         qp_attr.srq = srq;
         qp_attr.pd = self.pd.pd.as_ptr();
         qp_attr.cap.max_recv_wr = 0;
-        qp_attr.cap.max_recv_sge = 1;
+        qp_attr.cap.max_recv_sge = self.max_recv_sge;
         qp_attr.comp_mask = ibv_qp_init_attr_mask::IBV_QP_INIT_ATTR_PD.0;
 
         let mut mlx5_attr: mlx5dv::mlx5dv_qp_init_attr = unsafe { std::mem::zeroed() };

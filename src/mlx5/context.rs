@@ -31,10 +31,6 @@ impl Mlx5Context {
             flags: attrs.flags,
         })
     }
-
-    pub(crate) fn dev_ctx(&self) -> &Arc<DeviceContext> {
-        &self.dev_ctx
-    }
 }
 
 /// mlx5 device attributes.
