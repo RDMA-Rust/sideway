@@ -143,7 +143,7 @@ impl DcQpBuilder {
 
         let mut mlx5_attr: mlx5dv::mlx5dv_qp_init_attr = unsafe { std::mem::zeroed() };
         mlx5_attr.comp_mask = mlx5dv::MLX5DV_QP_INIT_ATTR_MASK_DC as u64;
-        mlx5_attr.dc_init_attr.dc_type = mlx5dv::MLX5DV_DCTYPE_DCI as u32;
+        mlx5_attr.dc_init_attr.dc_type = mlx5dv::MLX5DV_DCTYPE_DCI;
 
         let qp_ptr = unsafe {
             mlx5dv::mlx5dv_create_qp(
@@ -198,7 +198,7 @@ impl DcQpBuilder {
 
         let mut mlx5_attr: mlx5dv::mlx5dv_qp_init_attr = unsafe { std::mem::zeroed() };
         mlx5_attr.comp_mask = mlx5dv::MLX5DV_QP_INIT_ATTR_MASK_DC as u64;
-        mlx5_attr.dc_init_attr.dc_type = mlx5dv::MLX5DV_DCTYPE_DCT as u32;
+        mlx5_attr.dc_init_attr.dc_type = mlx5dv::MLX5DV_DCTYPE_DCT;
         mlx5_attr.dc_init_attr.__bindgen_anon_1.dct_access_key = self.dc_access_key;
 
         let qp_ptr = unsafe {
