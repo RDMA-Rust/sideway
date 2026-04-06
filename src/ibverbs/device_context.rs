@@ -978,7 +978,10 @@ mod tests {
         for device in &device_list {
             let ctx = device.open().unwrap();
 
-            let gid_entries = ctx.query_gid_table().unwrap();
+            let gid_entries = match ctx.query_gid_table() {
+                Ok(e) => e,
+                Err(_) => continue, // kernel may not support ibv_query_gid_table_ex
+            };
             let gid_entries_fallback = ctx.query_gid_table_fallback().unwrap();
 
             assert_eq!(gid_entries.len(), gid_entries_fallback.len());
