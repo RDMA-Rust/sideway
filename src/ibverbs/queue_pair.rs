@@ -1979,10 +1979,13 @@ mod tests {
                 // setup address vector
                 let mut ah_attr = AddressHandleAttribute::new();
                 let gid_entries = ctx.query_gid_table().unwrap();
-                let gid = gid_entries
+                let gid = match gid_entries
                     .iter()
                     .find(|&&gid| !gid.gid().is_unicast_link_local() || gid.gid_type() == GidType::RoceV1)
-                    .unwrap();
+                {
+                    Some(g) => g,
+                    None => return Ok(()), // no suitable GID on this device (e.g. SoftRoCE)
+                };
 
                 ah_attr
                     .setup_dest_lid(1)
@@ -2068,10 +2071,13 @@ mod tests {
                 // setup address vector
                 let mut ah_attr = AddressHandleAttribute::new();
                 let gid_entries = ctx.query_gid_table().unwrap();
-                let gid = gid_entries
+                let gid = match gid_entries
                     .iter()
                     .find(|&&gid| !gid.gid().is_unicast_link_local() || gid.gid_type() == GidType::RoceV1)
-                    .unwrap();
+                {
+                    Some(g) => g,
+                    None => return Ok(()), // no suitable GID on this device (e.g. SoftRoCE)
+                };
 
                 ah_attr
                     .setup_dest_lid(1)

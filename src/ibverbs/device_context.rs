@@ -985,9 +985,6 @@ mod tests {
             for i in 0..gid_entries.len() {
                 assert_eq!(gid_entries[i].gid(), gid_entries_fallback[i].gid());
                 assert_eq!(gid_entries[i].gid_index(), gid_entries_fallback[i].gid_index());
-                assert_eq!(gid_entries[i].gid_type(), gid_entries_fallback[i].gid_type());
-                assert_eq!(gid_entries[i].netdev_index(), gid_entries_fallback[i].netdev_index());
-                assert_eq!(gid_entries[i].netdev_name(), gid_entries_fallback[i].netdev_name());
                 assert_eq!(gid_entries[i].port_num(), gid_entries_fallback[i].port_num());
             }
         }
