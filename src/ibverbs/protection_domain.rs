@@ -68,4 +68,22 @@ impl ProtectionDomain {
     pub unsafe fn pd(&self) -> NonNull<ibv_pd> {
         self.pd
     }
+
+    /// Create a Shared Receive Queue (SRQ) on this PD.
+    /// Required for DC Target QPs.
+    pub fn create_srq(&self, max_wr: u32, max_sge: u32) -> Result<NonNull<rdma_mummy_sys::ibv_srq>, std::io::Error> {
+        let mut attr: rdma_mummy_sys::ibv_srq_init_attr = unsafe { std::mem::zeroed() };
+        attr.attr.max_wr = max_wr;
+        attr.attr.max_sge = max_sge;
+        let srq = unsafe { rdma_mummy_sys::ibv_create_srq(self.pd.as_ptr(), &mut attr) };
+        NonNull::new(srq).ok_or_else(std::io::Error::last_os_error)
+    }
+}
+
+/// Destroy an SRQ.
+///
+/// # Safety
+/// The SRQ must not be in use by any QP.
+pub unsafe fn destroy_srq(srq: NonNull<rdma_mummy_sys::ibv_srq>) {
+    rdma_mummy_sys::ibv_destroy_srq(srq.as_ptr());
 }
