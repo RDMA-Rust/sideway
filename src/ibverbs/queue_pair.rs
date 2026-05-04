@@ -2539,14 +2539,20 @@ mod tests {
 
                 // setup address vector
                 let mut ah_attr = AddressHandleAttribute::new();
+                let port_attr = ctx.query_port(1).unwrap();
                 let gid_entries = ctx.query_gid_table().unwrap();
                 let gid = gid_entries
                     .iter()
-                    .find(|&&gid| !gid.gid().is_unicast_link_local() || gid.gid_type() == GidType::RoceV1)
+                    .find(|&&gid| {
+                        gid.port_num() == 1
+                            && (!gid.gid().is_unicast_link_local()
+                                || gid.gid_type() == GidType::RoceV1
+                                || gid.gid_type() == GidType::InfiniBand)
+                    })
                     .unwrap();
 
                 ah_attr
-                    .setup_dest_lid(1)
+                    .setup_dest_lid(port_attr.lid())
                     .setup_port(1)
                     .setup_service_level(1)
                     .setup_grh_src_gid_index(gid.gid_index().try_into().unwrap())
@@ -2628,14 +2634,20 @@ mod tests {
 
                 // setup address vector
                 let mut ah_attr = AddressHandleAttribute::new();
+                let port_attr = ctx.query_port(1).unwrap();
                 let gid_entries = ctx.query_gid_table().unwrap();
                 let gid = gid_entries
                     .iter()
-                    .find(|&&gid| !gid.gid().is_unicast_link_local() || gid.gid_type() == GidType::RoceV1)
+                    .find(|&&gid| {
+                        gid.port_num() == 1
+                            && (!gid.gid().is_unicast_link_local()
+                                || gid.gid_type() == GidType::RoceV1
+                                || gid.gid_type() == GidType::InfiniBand)
+                    })
                     .unwrap();
 
                 ah_attr
-                    .setup_dest_lid(1)
+                    .setup_dest_lid(port_attr.lid())
                     .setup_port(1)
                     .setup_service_level(1)
                     .setup_grh_src_gid_index(gid.gid_index().try_into().unwrap())
