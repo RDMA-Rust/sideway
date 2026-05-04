@@ -465,6 +465,11 @@ impl PortAttr {
         self.attr.gid_tbl_len
     }
 
+    /// Get the base LID (Local Identifier) assigned to this port by the subnet manager.
+    pub fn lid(&self) -> u16 {
+        self.attr.lid
+    }
+
     /// Get the link layer protocol used by this port.
     pub fn link_layer(&self) -> LinkLayer {
         self.attr.link_layer.into()
