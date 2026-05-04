@@ -5,9 +5,10 @@ use rdma_mummy_sys::{
     ibv_create_qp, ibv_create_qp_ex, ibv_data_buf, ibv_destroy_qp, ibv_modify_qp, ibv_post_recv, ibv_post_send, ibv_qp,
     ibv_qp_attr, ibv_qp_attr_mask, ibv_qp_cap, ibv_qp_create_send_ops_flags, ibv_qp_ex, ibv_qp_init_attr,
     ibv_qp_init_attr_ex, ibv_qp_init_attr_mask, ibv_qp_state, ibv_qp_to_qp_ex, ibv_qp_type, ibv_query_qp, ibv_recv_wr,
-    ibv_rx_hash_conf, ibv_send_flags, ibv_send_wr, ibv_sge, ibv_wr_abort, ibv_wr_complete, ibv_wr_opcode,
-    ibv_wr_rdma_read, ibv_wr_rdma_write, ibv_wr_rdma_write_imm, ibv_wr_send, ibv_wr_send_imm, ibv_wr_set_inline_data,
-    ibv_wr_set_inline_data_list, ibv_wr_set_sge, ibv_wr_set_sge_list, ibv_wr_start,
+    ibv_rx_hash_conf, ibv_send_flags, ibv_send_wr, ibv_sge, ibv_wr_abort, ibv_wr_atomic_cmp_swp,
+    ibv_wr_atomic_fetch_add, ibv_wr_complete, ibv_wr_opcode, ibv_wr_rdma_read, ibv_wr_rdma_write,
+    ibv_wr_rdma_write_imm, ibv_wr_send, ibv_wr_send_imm, ibv_wr_set_inline_data, ibv_wr_set_inline_data_list,
+    ibv_wr_set_sge, ibv_wr_set_sge_list, ibv_wr_start,
 };
 use std::sync::{Arc, LazyLock};
 use std::{
@@ -442,6 +443,10 @@ mod private_traits {
         fn setup_write_imm(&mut self, rkey: u32, remote_addr: u64, imm_data: u32);
 
         fn setup_read(&mut self, rkey: u32, remote_addr: u64);
+
+        fn setup_atomic_compare_swap(&mut self, rkey: u32, remote_addr: u64, compare: u64, swap: u64);
+
+        fn setup_atomic_fetch_add(&mut self, rkey: u32, remote_addr: u64, add: u64);
 
         fn setup_inline_data(&mut self, buf: &[u8]);
 
@@ -1657,6 +1662,26 @@ impl<'g, G: PostSendGuard> WorkRequestHandle<'g, G> {
         self.guard.setup_read(rkey, remote_addr);
         LocalBufferHandle { guard: self.guard }
     }
+
+    /// Set up an atomic compare-and-swap operation on a remote memory location.
+    ///
+    /// Atomically compares the 8-byte value at `remote_addr` with `compare`; if equal,
+    /// replaces it with `swap`. The original value is written into the local buffer.
+    pub fn setup_atomic_compare_swap(
+        self, rkey: u32, remote_addr: u64, compare: u64, swap: u64,
+    ) -> LocalBufferHandle<'g, G> {
+        self.guard.setup_atomic_compare_swap(rkey, remote_addr, compare, swap);
+        LocalBufferHandle { guard: self.guard }
+    }
+
+    /// Set up an atomic fetch-and-add operation on a remote memory location.
+    ///
+    /// Atomically adds `add` to the 8-byte value at `remote_addr`.
+    /// The original value (before the add) is written into the local buffer.
+    pub fn setup_atomic_fetch_add(self, rkey: u32, remote_addr: u64, add: u64) -> LocalBufferHandle<'g, G> {
+        self.guard.setup_atomic_fetch_add(rkey, remote_addr, add);
+        LocalBufferHandle { guard: self.guard }
+    }
 }
 
 /// The basic [`PostSendGuard`] that works for [`BasicQueuePair`] which doesn't support [`ibv_wr_*`]
@@ -1755,6 +1780,23 @@ impl private_traits::PostSendGuard for BasicPostSendGuard<'_> {
         self.wrs.last_mut().unwrap().opcode = WorkRequestOperationType::Read as _;
         self.wrs.last_mut().unwrap().wr.rdma.remote_addr = remote_addr;
         self.wrs.last_mut().unwrap().wr.rdma.rkey = rkey;
+    }
+
+    fn setup_atomic_compare_swap(&mut self, rkey: u32, remote_addr: u64, compare: u64, swap: u64) {
+        let wr = self.wrs.last_mut().unwrap();
+        wr.opcode = WorkRequestOperationType::AtomicCompareAndSwap as _;
+        wr.wr.atomic.remote_addr = remote_addr;
+        wr.wr.atomic.rkey = rkey;
+        wr.wr.atomic.compare_add = compare;
+        wr.wr.atomic.swap = swap;
+    }
+
+    fn setup_atomic_fetch_add(&mut self, rkey: u32, remote_addr: u64, add: u64) {
+        let wr = self.wrs.last_mut().unwrap();
+        wr.opcode = WorkRequestOperationType::AtomicFetchAndAdd as _;
+        wr.wr.atomic.remote_addr = remote_addr;
+        wr.wr.atomic.rkey = rkey;
+        wr.wr.atomic.compare_add = add;
     }
 
     // Memcopy inline buffer manually to make it safe for user to modify / drop
@@ -1876,6 +1918,14 @@ impl private_traits::PostSendGuard for ExtendedPostSendGuard<'_> {
 
     fn setup_read(&mut self, rkey: u32, remote_addr: u64) {
         unsafe { ibv_wr_rdma_read(self.qp_ex.as_ptr(), rkey, remote_addr) };
+    }
+
+    fn setup_atomic_compare_swap(&mut self, rkey: u32, remote_addr: u64, compare: u64, swap: u64) {
+        unsafe { ibv_wr_atomic_cmp_swp(self.qp_ex.as_ptr(), rkey, remote_addr, compare, swap) };
+    }
+
+    fn setup_atomic_fetch_add(&mut self, rkey: u32, remote_addr: u64, add: u64) {
+        unsafe { ibv_wr_atomic_fetch_add(self.qp_ex.as_ptr(), rkey, remote_addr, add) };
     }
 
     fn setup_inline_data(&mut self, buf: &[u8]) {
@@ -2099,6 +2149,20 @@ impl private_traits::PostSendGuard for GenericPostSendGuard<'_> {
         match self {
             GenericPostSendGuard::Basic(guard) => guard.setup_read(rkey, remote_addr),
             GenericPostSendGuard::Extended(guard) => guard.setup_read(rkey, remote_addr),
+        }
+    }
+
+    fn setup_atomic_compare_swap(&mut self, rkey: u32, remote_addr: u64, compare: u64, swap: u64) {
+        match self {
+            GenericPostSendGuard::Basic(guard) => guard.setup_atomic_compare_swap(rkey, remote_addr, compare, swap),
+            GenericPostSendGuard::Extended(guard) => guard.setup_atomic_compare_swap(rkey, remote_addr, compare, swap),
+        }
+    }
+
+    fn setup_atomic_fetch_add(&mut self, rkey: u32, remote_addr: u64, add: u64) {
+        match self {
+            GenericPostSendGuard::Basic(guard) => guard.setup_atomic_fetch_add(rkey, remote_addr, add),
+            GenericPostSendGuard::Extended(guard) => guard.setup_atomic_fetch_add(rkey, remote_addr, add),
         }
     }
 

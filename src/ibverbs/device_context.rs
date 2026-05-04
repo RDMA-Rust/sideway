@@ -698,17 +698,15 @@ impl DeviceContext {
                         num => panic!("unknown gid type {num}!"),
                     };
 
-                    let netdev = unsafe {
-                        fs::read_to_string(format!(
-                            "/sys/class/infiniband/{name}/ports/{port_num}/gid_attrs/ndevs/{gid_index}",
-                        ))
-                        .unwrap_unchecked()
-                        .trim_ascii_end()
-                        .to_string()
-                    };
+                    let netdev = fs::read_to_string(format!(
+                        "/sys/class/infiniband/{name}/ports/{port_num}/gid_attrs/ndevs/{gid_index}",
+                    ))
+                    .unwrap_or_default()
+                    .trim_ascii_end()
+                    .to_string();
 
                     unsafe {
-                        netdev_index = libc::if_nametoindex(CString::new(netdev).unwrap_unchecked().as_ptr());
+                        netdev_index = libc::if_nametoindex(CString::new(netdev).unwrap_or_default().as_ptr());
                     }
 
                     res.push(GidEntry(ibv_gid_entry {
