@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.2](https://github.com/RDMA-Rust/sideway/compare/v0.4.1...v0.4.2) - 2026-05-10
+
+### Added
+
+- *(examples)* display more fields in ibv_devinfo
+- *(ibverbs)* expose raw device_attr and port_attr handles
+- *(ibverbs)* expose extended device attribute getters
+- *(ibverbs)* add atomic compare-and-swap and fetch-and-add operations
+- *(ibverbs)* add QP state transition tables for UC, UD and Raw Packet
+- Adding ibv_query_rt_values_ex verb
+
+### Fixed
+
+- *(ibverbs)* fix integration tests failing on InfiniBand link layer
+- *(ibverbs)* prevent segfault when ibv_create_qp_ex fail to create qp
+- *(ibverbs)* propagate configured qp_type in QueuePairBuilder::build
+
+### Other
+
+- return Option<Duration> from RealTimeValues::raw_clock
+- Renaming Rt to RealTime
+- Update src/ibverbs/device_context.rs
+- Adding ibv_query_rt_values_ex verb
+
 ## [0.4.1](https://github.com/RDMA-Rust/sideway/compare/v0.4.0...v0.4.1) - 2026-03-09
 
 ### Fixed
