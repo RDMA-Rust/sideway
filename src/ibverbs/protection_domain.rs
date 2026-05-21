@@ -4,6 +4,7 @@
 //! [`QueuePair`]: crate::ibverbs::queue_pair::QueuePair
 //!
 use rdma_mummy_sys::{ibv_dealloc_pd, ibv_pd};
+use std::os::fd::RawFd;
 use std::ptr::NonNull;
 use std::sync::Arc;
 
@@ -52,6 +53,49 @@ impl ProtectionDomain {
         self: &Arc<Self>, ptr: usize, len: usize, access: AccessFlags,
     ) -> Result<Arc<MemoryRegion>, RegisterMemoryRegionError> {
         Ok(Arc::new(MemoryRegion::reg_mr(Arc::clone(self), ptr, len, access)?))
+    }
+
+    /// Register a dma-buf-backed memory region.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure that `fd` refers to a valid dma-buf file descriptor,
+    /// that the exported memory remains valid for `offset..offset + length`, and
+    /// that `iova` and `access` satisfy the requirements of the target provider.
+    ///
+    /// ```no_run
+    /// use std::os::fd::RawFd;
+    ///
+    /// use sideway::ibverbs::device::DeviceList;
+    /// use sideway::ibverbs::AccessFlags;
+    ///
+    /// let device_list = DeviceList::new().unwrap();
+    /// let device = device_list.get(0).unwrap();
+    /// let context = device.open().unwrap();
+    /// let pd = context.alloc_pd().unwrap();
+    /// let dmabuf_fd: RawFd = 0; // replace with a real dma-buf FD from your allocator/exporter
+    ///
+    /// let _mr = unsafe {
+    ///     pd.reg_dmabuf_mr(
+    ///         0,
+    ///         4096,
+    ///         0,
+    ///         dmabuf_fd,
+    ///         AccessFlags::LocalWrite | AccessFlags::RemoteWrite,
+    ///     )
+    /// };
+    /// ```
+    pub unsafe fn reg_dmabuf_mr(
+        self: &Arc<Self>, offset: u64, length: usize, iova: u64, fd: RawFd, access: AccessFlags,
+    ) -> Result<Arc<MemoryRegion>, RegisterMemoryRegionError> {
+        Ok(Arc::new(MemoryRegion::reg_dmabuf_mr(
+            Arc::clone(self),
+            offset,
+            length,
+            iova,
+            fd,
+            access,
+        )?))
     }
 
     /// Create a [`QueuePairBuilder`] for building QPs on this protection domain

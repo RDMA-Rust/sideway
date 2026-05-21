@@ -63,7 +63,7 @@ use rdma_mummy_sys::ibv_access_flags;
 /// # Reference
 ///
 /// - RDMAmojo: [`ibv_modify_qp`](https://www.rdmamojo.com/2013/01/12/ibv_modify_qp/), [`ibv_reg_mr`](https://www.rdmamojo.com/2012/09/07/ibv_reg_mr/)
-/// - rdma-core manpages: [`ibv_reg_mr`](https://man7.org/linux/man-pages/man3/ibv_reg_mr.3.html)
+/// - rdma-core manpages: [`ibv_reg_mr`](https://man7.org/linux/man-pages/man3/ibv_reg_mr.3.html), [`ibv_reg_dmabuf_mr`](https://man7.org/linux/man-pages/man3/ibv_reg_mr.3.html)
 ///
 /// [`QueuePair`]: queue_pair::QueuePair
 /// [`MemoryRegion`]: memory_region::MemoryRegion

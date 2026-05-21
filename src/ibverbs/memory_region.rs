@@ -1,6 +1,6 @@
 //! Users need to register memory they allocated as memory region for accessing it later.
-use rdma_mummy_sys::{ibv_dereg_mr, ibv_mr, ibv_reg_mr};
-use std::{io, ptr::NonNull, sync::Arc};
+use rdma_mummy_sys::{ibv_dereg_mr, ibv_mr, ibv_reg_dmabuf_mr, ibv_reg_mr};
+use std::{io, os::fd::RawFd, ptr::NonNull, sync::Arc};
 
 use super::protection_domain::ProtectionDomain;
 use super::AccessFlags;
@@ -79,6 +79,29 @@ impl MemoryRegion {
         pd: Arc<ProtectionDomain>, ptr: usize, len: usize, access: AccessFlags,
     ) -> Result<Self, RegisterMemoryRegionError> {
         let mr = unsafe { ibv_reg_mr(pd.pd.as_ptr(), ptr as _, len, access.into()) };
+
+        if mr.is_null() {
+            return Err(RegisterMemoryRegionErrorKind::Ibverbs(io::Error::last_os_error()).into());
+        }
+
+        Ok(Self {
+            mr: NonNull::new(mr).unwrap(),
+            _pd: pd,
+        })
+    }
+
+    /// Register a dma-buf-backed memory region.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure that `fd` refers to a valid dma-buf whose exported
+    /// memory remains compatible with the target device for the specified
+    /// `offset`, `length`, and `iova` mapping, and that the requested `access`
+    /// flags satisfy the libibverbs requirements for the underlying provider.
+    pub(crate) unsafe fn reg_dmabuf_mr(
+        pd: Arc<ProtectionDomain>, offset: u64, length: usize, iova: u64, fd: RawFd, access: AccessFlags,
+    ) -> Result<Self, RegisterMemoryRegionError> {
+        let mr = unsafe { ibv_reg_dmabuf_mr(pd.pd.as_ptr(), offset, length, iova, fd, access.into()) };
 
         if mr.is_null() {
             return Err(RegisterMemoryRegionErrorKind::Ibverbs(io::Error::last_os_error()).into());
