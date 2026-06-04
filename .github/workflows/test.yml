@@ -39,3 +39,45 @@ jobs:
           token: ${{ secrets.CODECOV_TOKEN }}
           verbose: true
           file: lcov.info
+
+  test-rxe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository code
+        uses: actions/checkout@v4
+      - name: Install tools required
+        uses: taiki-e/install-action@v2
+        with:
+          tool: just,cargo-nextest,cargo-llvm-cov
+      - name: Clone rxe kmod
+        run: |
+          uname -a
+          git clone https://github.com/pizhenwei/rxe.git
+          make -C rxe
+          sudo insmod ./rxe/rdma_rxe.ko
+          ip add
+          sudo rdma link add rxe_eth0 type rxe netdev eth0
+      - name: Build rdma-core
+        run: |
+          sudo apt update
+          sudo apt install -y make pkg-config cmake libnl-3-dev libnl-route-3-dev libnl-genl-3-dev
+          git clone https://github.com/linux-rdma/rdma-core.git
+          ./rdma-core/build.sh
+      - name: Test with RXE
+        run: |
+          export LD_LIBRARY_PATH=./rdma-core/build/lib
+          cargo llvm-cov --no-report run --example ibv_devinfo
+          if modinfo mlx5_ib >/dev/null 2>&1 && lsmod | grep -q '^mlx5_ib'; then
+            sudo rmmod mlx5_ib
+          fi
+          just test-basic-with-cov
+          just test-rc-pingpong-with-cov
+          just test-cmtime-with-cov
+          just generate-cov
+      - name: Upload coverage information
+        uses: codecov/codecov-action@v5
+        with:
+          fail_ci_if_error: false
+          token: ${{ secrets.CODECOV_TOKEN }}
+          verbose: true
+          file: lcov.info
