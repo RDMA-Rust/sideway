@@ -169,7 +169,7 @@ use rdma_mummy_sys::{
     ibv_qp_attr, ibv_qp_type, rdma_accept, rdma_ack_cm_event, rdma_bind_addr, rdma_cm_event, rdma_cm_event_type,
     rdma_cm_id, rdma_conn_param, rdma_connect, rdma_create_event_channel, rdma_create_id, rdma_destroy_event_channel,
     rdma_destroy_id, rdma_disconnect, rdma_establish, rdma_event_channel, rdma_get_cm_event, rdma_init_qp_attr,
-    rdma_listen, rdma_port_space, rdma_resolve_addr, rdma_resolve_route,
+    rdma_listen, rdma_migrate_id, rdma_port_space, rdma_resolve_addr, rdma_resolve_route,
 };
 
 use crate::ibverbs::device_context::DeviceContext;
@@ -226,6 +226,7 @@ static DEVICE_LISTS: LazyLock<Mutex<HashMap<usize, Arc<DeviceContext>>>> = LazyL
 /// An RDMA event represents an event from an RDMA event channel, reported by an [`Identifier`].
 pub struct Event {
     event: NonNull<rdma_cm_event>,
+    event_channel: Option<Arc<EventChannel>>,
     cm_id: Option<Arc<Identifier>>,
     listener_id: Option<Arc<Identifier>>,
 }
@@ -238,7 +239,12 @@ pub struct EventChannel {
 /// An RDMA CM identifier (`rdma_cm_id`), conceptually similar to a socket, an [`Identifier`] would
 /// report some of the RDMA CM operations' result as an [`Event`] to its [`EventChannel`].
 pub struct Identifier {
-    _event_channel: Arc<EventChannel>,
+    // Keeps the raw rdma_cm_id's current event channel alive. The mutex is a
+    // Rust-side migration guard: it serializes rdma_migrate_id plus the Arc
+    // replacement so concurrent migrations cannot leave this lifetime anchor
+    // pointing at a different channel than rdma_cm_id::channel. It is not a
+    // general RDMA CM operation lock; other operations do not read this field.
+    event_channel: Mutex<Arc<EventChannel>>,
     cm_id: NonNull<rdma_cm_id>,
     user_context: Mutex<Option<Arc<dyn Any + Send + Sync>>>,
 }
@@ -251,6 +257,7 @@ pub struct ConnectionParameter {
 }
 
 /// The RDMA port space.
+#[derive(Debug, Clone, Copy)]
 pub enum PortSpace {
     /// Provides for any InfiniBand services (UD, UC, RC, XRC, etc.).
     InfiniBand = rdma_port_space::RDMA_PS_IB as isize,
@@ -392,6 +399,21 @@ pub struct ListenError(#[from] pub ListenErrorKind);
 #[error(transparent)]
 #[non_exhaustive]
 pub enum ListenErrorKind {
+    Rdmacm(#[from] io::Error),
+}
+
+/// Error returned by [`Identifier::migrate`] for moving an [`Identifier`] to another
+/// [`EventChannel`].
+#[derive(Debug, thiserror::Error)]
+#[error("failed to migrate rdma cm identifier")]
+#[non_exhaustive]
+pub struct MigrateError(#[from] pub MigrateErrorKind);
+
+/// The enum type for [`MigrateError`].
+#[derive(Debug, thiserror::Error)]
+#[error(transparent)]
+#[non_exhaustive]
+pub enum MigrateErrorKind {
     Rdmacm(#[from] io::Error),
 }
 
@@ -605,6 +627,7 @@ impl Event {
             return Err(AcknowledgeEventErrorKind::Rdmacm(io::Error::last_os_error()).into());
         }
 
+        self.event_channel.take();
         self.cm_id.take();
         self.listener_id.take();
 
@@ -626,7 +649,7 @@ impl Drop for Event {
 fn new_cm_id_for_raw(event_channel: Arc<EventChannel>, raw: *mut rdma_cm_id) -> Arc<Identifier> {
     let cm = unsafe {
         Arc::new(Identifier {
-            _event_channel: event_channel,
+            event_channel: Mutex::new(event_channel),
             cm_id: NonNull::new(raw).unwrap_unchecked(),
             user_context: Mutex::new(None),
         })
@@ -715,6 +738,7 @@ impl EventChannel {
 
         Ok(Event {
             event,
+            event_channel: Some(self.clone()),
             cm_id,
             listener_id,
         })
@@ -898,6 +922,38 @@ impl Identifier {
         if ret < 0 {
             return Err(ListenErrorKind::Rdmacm(io::Error::last_os_error()).into());
         }
+
+        Ok(())
+    }
+
+    /// Move this [`Identifier`] to another [`EventChannel`].
+    ///
+    /// After a successful migration, RDMA CM events associated with this
+    /// identifier are reported on `channel`. `librdmacm` also moves any pending
+    /// events for the identifier to the new channel.
+    ///
+    /// # Note
+    ///
+    /// The underlying [`rdma_migrate_id(3)`] call may block while the current
+    /// event channel has unacknowledged events. Do not poll the current event
+    /// channel or invoke other routines on this identifier while migrating it
+    /// between channels.
+    ///
+    /// The C API accepts a null channel to put the ID into synchronous operation
+    /// mode. This safe wrapper intentionally exposes only migration to a live
+    /// [`EventChannel`].
+    ///
+    /// [`rdma_migrate_id(3)`]: https://man7.org/linux/man-pages/man3/rdma_migrate_id.3.html
+    pub fn migrate(&self, channel: &Arc<EventChannel>) -> Result<(), MigrateError> {
+        let mut event_channel = self.event_channel.lock().unwrap();
+        let cm_id = self.cm_id;
+        let ret = unsafe { rdma_migrate_id(cm_id.as_ptr(), channel.channel.as_ptr()) };
+
+        if ret < 0 {
+            return Err(MigrateErrorKind::Rdmacm(io::Error::last_os_error()).into());
+        }
+
+        *event_channel = channel.clone();
 
         Ok(())
     }
@@ -1294,6 +1350,25 @@ mod tests {
         .map_err(|err| err.to_string())
     }
 
+    fn wait_for_cm_event(
+        channel: &Arc<EventChannel>, timeout: Duration, description: &str,
+    ) -> Result<Event, Box<dyn std::error::Error>> {
+        channel.set_nonblocking(true)?;
+
+        let poller = Poller::new()?;
+        unsafe { poller.add(channel, PollingEvent::readable(1))? };
+
+        let mut events = Events::new();
+        poller.wait(&mut events, Some(timeout))?;
+
+        assert!(
+            !events.is_empty(),
+            "expected {description} to receive an RDMA CM event before timeout"
+        );
+
+        Ok(channel.get_cm_event()?)
+    }
+
     #[test]
     fn test_cm_id_reference_count() -> Result<(), Box<dyn std::error::Error>> {
         match EventChannel::new() {
@@ -1311,7 +1386,7 @@ mod tests {
 
                 assert_eq!(Arc::strong_count(&id), 1);
 
-                let event = channel.get_cm_event().unwrap();
+                let event = wait_for_cm_event(&channel, Duration::from_secs(2), "reference count test")?;
 
                 assert_eq!(Arc::strong_count(&id), 2);
 
@@ -1339,31 +1414,15 @@ mod tests {
 
                 assert_eq!(Arc::strong_count(&id), 1);
 
-                channel.set_nonblocking(true).unwrap();
-
                 let dispatcher = thread::spawn(move || {
-                    let poller = Poller::new().expect("Failed to create poller");
-                    let key = 233;
-
                     assert_eq!(Arc::strong_count(&channel), 2);
-                    unsafe { poller.add(&channel, PollingEvent::readable(key)).unwrap() };
 
-                    let mut events = Events::new();
-                    events.clear();
-                    poller.wait(&mut events, None).unwrap();
+                    let event = wait_for_cm_event(&channel, Duration::from_secs(2), "event fd test").unwrap();
+                    assert_eq!(event.event_type(), EventType::AddressResolved);
+                    assert_eq!(Arc::strong_count(&channel), 3);
 
-                    assert_eq!(events.len(), 1);
-
-                    for ev in events.iter() {
-                        assert_eq!(ev.key, key);
-
-                        let event = channel.get_cm_event().unwrap();
-                        assert_eq!(event.event_type(), EventType::AddressResolved);
-                        assert_eq!(Arc::strong_count(&channel), 2);
-
-                        event.ack().unwrap();
-                        assert_eq!(Arc::strong_count(&channel), 2);
-                    }
+                    event.ack().unwrap();
+                    assert_eq!(Arc::strong_count(&channel), 2);
                 });
 
                 let _ = id.resolve_addr(
@@ -1378,6 +1437,129 @@ mod tests {
                 Ok(())
             },
             Err(_) => Ok(()),
+        }
+    }
+
+    #[test]
+    fn test_event_keeps_source_channel_alive_after_identifier_migrates() -> Result<(), Box<dyn std::error::Error>> {
+        match (EventChannel::new(), EventChannel::new()) {
+            (Ok(source_channel), Ok(migrated_channel)) => {
+                let id = source_channel.create_id(PortSpace::Tcp)?;
+                let source_channel_weak = Arc::downgrade(&source_channel);
+
+                id.resolve_addr(
+                    None,
+                    SocketAddr::from((IpAddr::from_str("127.0.0.1").expect("Invalid IP address"), 0)),
+                    Duration::new(0, 200000000),
+                )?;
+
+                let event = wait_for_cm_event(&source_channel, Duration::from_secs(2), "source event channel")?;
+                assert_eq!(event.event_type(), EventType::AddressResolved);
+                assert_eq!(Arc::strong_count(&source_channel), 3);
+
+                // Model the Rust-side lifetime state after a successful migration
+                // without calling rdma_migrate_id while an event is unacknowledged.
+                // The event must keep its retrieval channel alive even after the
+                // identifier's current channel anchor moves elsewhere.
+                *id.event_channel.lock().unwrap() = migrated_channel;
+                assert_eq!(Arc::strong_count(&source_channel), 2);
+
+                drop(source_channel);
+                assert_eq!(source_channel_weak.strong_count(), 1);
+
+                event.ack()?;
+                assert!(source_channel_weak.upgrade().is_none());
+
+                Ok(())
+            },
+            _ => Ok(()),
+        }
+    }
+
+    #[test]
+    fn test_migrate_id_to_same_channel_reports_events() -> Result<(), Box<dyn std::error::Error>> {
+        match EventChannel::new() {
+            Ok(channel) => {
+                let id = channel.create_id(PortSpace::Tcp)?;
+                let raw_channel = channel.channel.as_ptr();
+
+                assert_eq!(Arc::strong_count(&channel), 2);
+                assert_eq!(unsafe { id.cm_id.as_ref().channel }, raw_channel);
+
+                id.migrate(&channel)?;
+
+                assert_eq!(Arc::strong_count(&channel), 2);
+                assert_eq!(unsafe { id.cm_id.as_ref().channel }, raw_channel);
+
+                id.resolve_addr(
+                    None,
+                    SocketAddr::from((IpAddr::from_str("127.0.0.1").expect("Invalid IP address"), 0)),
+                    Duration::new(0, 200000000),
+                )?;
+
+                let event = wait_for_cm_event(&channel, Duration::from_secs(2), "self-migrated event channel")?;
+                assert_eq!(event.event_type(), EventType::AddressResolved);
+                assert!(Arc::ptr_eq(
+                    &event
+                        .cm_id()
+                        .expect("self-migrated event should carry the migrated identifier"),
+                    &id
+                ));
+                event.ack()?;
+
+                Ok(())
+            },
+            Err(_) => Ok(()),
+        }
+    }
+
+    #[test]
+    fn test_migrate_id_reports_events_to_new_channel() -> Result<(), Box<dyn std::error::Error>> {
+        match (EventChannel::new(), EventChannel::new()) {
+            (Ok(source_channel), Ok(migrated_channel)) => {
+                let id = source_channel.create_id(PortSpace::Tcp)?;
+
+                assert_eq!(Arc::strong_count(&source_channel), 2);
+                assert_eq!(Arc::strong_count(&migrated_channel), 1);
+
+                source_channel.set_nonblocking(true)?;
+                id.migrate(&migrated_channel)?;
+
+                assert_eq!(Arc::strong_count(&source_channel), 1);
+                assert_eq!(Arc::strong_count(&migrated_channel), 2);
+                assert_eq!(unsafe { id.cm_id.as_ref().channel }, migrated_channel.channel.as_ptr());
+
+                id.resolve_addr(
+                    None,
+                    SocketAddr::from((IpAddr::from_str("127.0.0.1").expect("Invalid IP address"), 0)),
+                    Duration::new(0, 200000000),
+                )?;
+
+                let event = wait_for_cm_event(&migrated_channel, Duration::from_secs(2), "migrated event channel")?;
+                assert_eq!(event.event_type(), EventType::AddressResolved);
+                assert!(Arc::ptr_eq(
+                    &event
+                        .cm_id()
+                        .expect("migrated event should carry the migrated identifier"),
+                    &id
+                ));
+                event.ack()?;
+
+                match source_channel.get_cm_event() {
+                    Err(err) => match err.0 {
+                        GetEventErrorKind::NoEvent => {},
+                        GetEventErrorKind::Rdmacm(err) => return Err(err.into()),
+                    },
+                    Ok(event) => {
+                        let event_type = event.event_type();
+                        event.ack()?;
+                        panic!("source channel unexpectedly received migrated event {event_type:?}");
+                    },
+                }
+
+                Ok(())
+            },
+            _ => Ok(()),
         }
     }
 
@@ -1590,7 +1772,7 @@ mod tests {
                     Duration::new(0, 200000000),
                 );
 
-                let event = channel.get_cm_event()?;
+                let event = wait_for_cm_event(&channel, Duration::from_secs(2), "device context test")?;
                 assert_eq!(event.event_type(), EventType::AddressResolved);
 
                 let ctx1 = id.get_device_context();
