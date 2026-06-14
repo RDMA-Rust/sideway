@@ -5,7 +5,7 @@ description = "A better wrapper for using RDMA programming APIs in Rust flavor"
 license= "MPL-2.0"
 repository = "https://github.com/RDMA-Rust/sideway"
 readme = "README.md"
-keywords = ["RDMA", "verbs", "cm", "libibverbs", "librdmacm"]
+keywords = ["RDMA", "verbs", "cm", "libibverbs", "librdmacm", "ibverbs", "rdmacm"]
 authors = [
     "Luke Yue <lukedyue@gmail.com>",
     "FujiZ <i@fujiz.me>",

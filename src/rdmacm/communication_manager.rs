@@ -166,8 +166,8 @@ use std::{io, mem::MaybeUninit, net::SocketAddr, ptr::NonNull, sync::Arc};
 
 use os_socketaddr::OsSocketAddr;
 use rdma_mummy_sys::{
-    ibv_qp_attr, rdma_accept, rdma_ack_cm_event, rdma_bind_addr, rdma_cm_event, rdma_cm_event_type, rdma_cm_id,
-    rdma_conn_param, rdma_connect, rdma_create_event_channel, rdma_create_id, rdma_destroy_event_channel,
+    ibv_qp_attr, ibv_qp_type, rdma_accept, rdma_ack_cm_event, rdma_bind_addr, rdma_cm_event, rdma_cm_event_type,
+    rdma_cm_id, rdma_conn_param, rdma_connect, rdma_create_event_channel, rdma_create_id, rdma_destroy_event_channel,
     rdma_destroy_id, rdma_disconnect, rdma_establish, rdma_event_channel, rdma_get_cm_event, rdma_init_qp_attr,
     rdma_listen, rdma_port_space, rdma_resolve_addr, rdma_resolve_route,
 };
@@ -245,7 +245,7 @@ pub struct Identifier {
 
 /// A connection paramter used for configure the communication when connecting or establishing
 /// datagram communication. Used in [`Identifier::connect`] and [`Identifier::accept`].
-pub struct ConnectionParameter(rdma_conn_param);
+pub struct ConnectionParameter(rdma_conn_param, Vec<u8>);
 
 /// The RDMA port space.
 pub enum PortSpace {
@@ -515,6 +515,74 @@ impl Event {
     /// event, for example, [`EventType::Rejected`].
     pub fn status(&self) -> i32 {
         unsafe { self.event.as_ref().status }
+    }
+
+    /// Get the private data sent by the remote peer.
+    ///
+    /// This is available for [`EventType::ConnectRequest`],
+    /// [`EventType::ConnectResponse`], and [`EventType::Rejected`] events, where
+    /// RDMA CM uses the `rdma_cm_event.param` union to carry connection or
+    /// datagram-service private data.
+    ///
+    /// Note that the actual amount of data transferred is transport dependent
+    /// and may be larger than that requested, with trailing zero as padding.
+    ///
+    /// **For `AF_IB` connected requests, Linux formats RDMA CM's
+    /// `struct cma_hdr` at the start of the IB CM REQ private-data area.
+    /// The first byte is `cma_version`, currently `0`, so byte 0 of
+    /// the [`EventType::ConnectRequest`] private data is overwritten
+    /// with `0` and is not the peer's original application byte.**
+    ///
+    /// # Returns
+    /// The private data slice, or an empty slice if the event has no private
+    /// data.
+    ///
+    /// # Example
+    /// ```ignore
+    /// match event.event_type() {
+    ///     EventType::ConnectRequest => {
+    ///         let data = event.private_data();
+    ///         if !data.is_empty() {
+    ///             println!("Received {} bytes of private data", data.len());
+    ///         }
+    ///     }
+    ///     _ => {}
+    /// }
+    /// ```
+    pub fn private_data(&self) -> &[u8] {
+        unsafe {
+            let event = self.event.as_ref();
+            match self.event_type() {
+                EventType::ConnectRequest | EventType::ConnectResponse | EventType::Rejected => {
+                    let Some(id) = NonNull::new(event.id) else {
+                        return &[];
+                    };
+
+                    if id.as_ref().qp_type == ibv_qp_type::IBV_QPT_UD {
+                        let param = &event.param.ud;
+                        Self::private_data_slice(event, param.private_data, param.private_data_len)
+                    } else {
+                        let param = &event.param.conn;
+                        Self::private_data_slice(event, param.private_data, param.private_data_len)
+                    }
+                },
+                _ => &[],
+            }
+        }
+    }
+
+    fn private_data_slice(
+        _event: &rdma_cm_event, private_data: *const std::ffi::c_void, private_data_len: u8,
+    ) -> &[u8] {
+        let len = private_data_len as usize;
+        if len == 0 || private_data.is_null() {
+            &[]
+        } else {
+            // SAFETY: The caller selected the active RDMA CM event union member
+            // for an event type that carries private data. The returned slice is
+            // valid until the event is acknowledged.
+            unsafe { std::slice::from_raw_parts(private_data.cast(), len) }
+        }
     }
 
     /// Acknowledge and free the communication event.
@@ -962,33 +1030,39 @@ impl Identifier {
 
 impl Default for ConnectionParameter {
     fn default() -> Self {
-        Self(rdma_conn_param {
-            private_data: null(),
-            private_data_len: 0,
-            responder_resources: 1,
-            initiator_depth: 1,
-            flow_control: 0,
-            retry_count: 7,
-            rnr_retry_count: 7,
-            srq: 0,
-            qp_num: 0,
-        })
+        Self(
+            rdma_conn_param {
+                private_data: null(),
+                private_data_len: 0,
+                responder_resources: 1,
+                initiator_depth: 1,
+                flow_control: 0,
+                retry_count: 7,
+                rnr_retry_count: 7,
+                srq: 0,
+                qp_num: 0,
+            },
+            Vec::new(),
+        )
     }
 }
 
 impl ConnectionParameter {
     pub fn new() -> Self {
-        Self(rdma_conn_param {
-            private_data: null(),
-            private_data_len: 0,
-            responder_resources: 0,
-            initiator_depth: 0,
-            flow_control: 0,
-            retry_count: 0,
-            rnr_retry_count: 0,
-            srq: 0,
-            qp_num: 0,
-        })
+        Self(
+            rdma_conn_param {
+                private_data: null(),
+                private_data_len: 0,
+                responder_resources: 0,
+                initiator_depth: 0,
+                flow_control: 0,
+                retry_count: 0,
+                rnr_retry_count: 0,
+                srq: 0,
+                qp_num: 0,
+            },
+            Vec::new(),
+        )
     }
 
     /// Setup the QP number of the [`Identifier`]. You should fill in this field when you are
@@ -1002,15 +1076,220 @@ impl ConnectionParameter {
         self.0.qp_num = qp_number;
         self
     }
+
+    /// Setup the private data to be sent with connect or accept.
+    ///
+    /// # Private data size
+    ///
+    /// This method copies the provided slice into the [`ConnectionParameter`]
+    /// and stores that owned buffer's pointer and length in the raw RDMA CM
+    /// parameter. It does not cap the length to any specific RDMA CM operation.
+    /// Check the operation limit
+    /// before calling [`Identifier::connect`] or [`Identifier::accept`], or when
+    /// using the lower-level [`rdma_reject(3)`] API.
+    ///
+    /// | Port space | Service type | [`connect`] | [`accept`] | [`rdma_reject(3)`] |
+    /// | --- | --- | ---: | ---: | ---: |
+    /// | [`PortSpace::Tcp`] | connected | 56 | 196 | 148 |
+    /// | [`PortSpace::Udp`] | datagram | 180 | 136 | 136 |
+    /// | [`PortSpace::InfiniBand`] | connected | 92 | 196 | 148 |
+    /// | [`PortSpace::InfiniBand`] | datagram | 216 | 136 | 136 |
+    ///
+    /// [`PortSpace::Tcp`] and [`PortSpace::Udp`] values are the user-visible
+    /// payload sizes documented by the [`rdma_connect(3)`] and
+    /// [`rdma_accept(3)`] man pages, plus the [`rdma_reject(3)`] sizes implied
+    /// by Linux's IB CM message constants and RDMA CM routing.
+    /// [`PortSpace::InfiniBand`] is derived from Linux CMA's
+    /// `id->qp_type == IB_QPT_UD` branch: connected QPs use IB CM REQ/REP/REJ
+    /// messages, while datagram services use SIDR REQ/REP.
+    ///
+    /// **For IB connected requests, Linux formats RDMA CM's
+    /// `struct cma_hdr` at the start of the IB CM REQ private-data area.
+    /// The first byte is `cma_version`, currently `0`, so byte 0 of
+    /// the [`EventType::ConnectRequest`] private data is overwritten
+    /// with `0`, please offset one byte when setting private data for IB.**
+    ///
+    /// [`connect`]: Identifier::connect
+    /// [`accept`]: Identifier::accept
+    /// [`rdma_connect(3)`]: https://man7.org/linux/man-pages/man3/rdma_connect.3.html
+    /// [`rdma_accept(3)`]: https://man7.org/linux/man-pages/man3/rdma_accept.3.html
+    /// [`rdma_reject(3)`]: https://man7.org/linux/man-pages/man3/rdma_reject.3.html
+    ///
+    /// [`setup_private_data`]: ConnectionParameter::setup_private_data
+    ///
+    /// # Panics
+    /// Panics if `data.len()` does not fit in `u8`, because
+    /// `rdma_conn_param.private_data_len` is an 8-bit field.
+    ///
+    /// # Example
+    /// ```ignore
+    /// let my_data = [1u8, 2, 3, 4];
+    /// param.setup_private_data(&my_data);
+    /// id.connect(param)?;
+    /// ```
+    pub fn setup_private_data(&mut self, data: &[u8]) -> &mut Self {
+        let len =
+            u8::try_from(data.len()).expect("ConnectionParameter private_data length is limited to u8::MAX bytes");
+        self.1.clear();
+        self.1.extend_from_slice(data);
+        self.0.private_data = if self.1.is_empty() {
+            null()
+        } else {
+            self.1.as_ptr().cast()
+        };
+        self.0.private_data_len = len;
+        self
+    }
+
+    /// Setup responder resources for the connection.
+    /// This is the maximum number of outstanding RDMA read/atomic operations
+    /// the local side will accept from the remote side.
+    pub fn setup_responder_resources(&mut self, resources: u8) -> &mut Self {
+        self.0.responder_resources = resources;
+        self
+    }
+
+    /// Setup initiator depth for the connection.
+    /// This is the maximum number of outstanding RDMA read/atomic operations
+    /// that the local side will have pending to the remote side.
+    pub fn setup_initiator_depth(&mut self, depth: u8) -> &mut Self {
+        self.0.initiator_depth = depth;
+        self
+    }
+
+    /// Setup retry count for the connection.
+    /// The number of times to retry a connection request or response.
+    pub fn setup_retry_count(&mut self, count: u8) -> &mut Self {
+        self.0.retry_count = count;
+        self
+    }
+
+    /// Setup RNR retry count for the connection.
+    /// The number of times to retry a receiver-not-ready error.
+    pub fn setup_rnr_retry_count(&mut self, count: u8) -> &mut Self {
+        self.0.rnr_retry_count = count;
+        self
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use polling::{Event, Events, Poller};
-    use std::net::{IpAddr, SocketAddr};
+    use crate::ibverbs::address::{GidEntry, GidType};
+    use crate::ibverbs::completion::GenericCompletionQueue;
+    use crate::ibverbs::device;
+    use crate::ibverbs::queue_pair::{ExtendedQueuePair, QueuePair};
+    use polling::{Event as PollingEvent, Events, Poller};
+    use std::net::{IpAddr, Ipv6Addr, SocketAddr};
     use std::str::FromStr;
     use std::thread;
+
+    const CM_SETUP_PRIVATE_DATA_SIZE: usize = 54;
+
+    #[derive(Clone, Copy)]
+    struct CmGidTestAddr {
+        ip: IpAddr,
+        scope_id: u32,
+    }
+
+    impl CmGidTestAddr {
+        fn socket_addr(self, port: u16) -> SocketAddr {
+            match self.ip {
+                IpAddr::V4(addr) => SocketAddr::from((addr, port)),
+                IpAddr::V6(addr) => SocketAddr::V6(std::net::SocketAddrV6::new(addr, port, 0, self.scope_id)),
+            }
+        }
+    }
+
+    fn cm_addr_from_gid_entry(gid_entry: GidEntry) -> Option<CmGidTestAddr> {
+        let gid = gid_entry.gid();
+        if gid.is_zero() {
+            return None;
+        }
+
+        match gid_entry.gid_type() {
+            GidType::InfiniBand => {},
+            GidType::RoceV2 if !gid.is_unicast_link_local() => {},
+            _ => return None,
+        }
+
+        let ipv6 = Ipv6Addr::from(gid);
+        let scope_id = if ipv6.is_unicast_link_local() {
+            let scope_id = gid_entry.netdev_index();
+            if scope_id == 0 {
+                return None;
+            }
+            scope_id
+        } else {
+            0
+        };
+
+        Some(CmGidTestAddr {
+            ip: ipv6.to_ipv4_mapped().map_or(IpAddr::V6(ipv6), IpAddr::V4),
+            scope_id,
+        })
+    }
+
+    fn first_ib_or_roce_v2_gid_addr() -> Option<CmGidTestAddr> {
+        let device_list = device::DeviceList::new().ok()?;
+
+        for device in &device_list {
+            let Ok(ctx) = device.open() else {
+                continue;
+            };
+            let Ok(gid_entries) = ctx.query_gid_table() else {
+                continue;
+            };
+
+            if let Some(addr) = gid_entries.into_iter().find_map(cm_addr_from_gid_entry) {
+                return Some(addr);
+            }
+        }
+
+        None
+    }
+
+    fn create_test_qp(id: &Identifier) -> Result<ExtendedQueuePair, String> {
+        let ctx = id
+            .get_device_context()
+            .ok_or_else(|| "RDMA CM ID has no verbs device context".to_owned())?;
+        let pd = ctx.alloc_pd().map_err(|err| err.to_string())?;
+        let cq = GenericCompletionQueue::from(
+            ctx.create_cq_builder()
+                .setup_cqe(2)
+                .build_ex()
+                .map_err(|err| err.to_string())?,
+        );
+
+        let mut qp = pd
+            .create_qp_builder()
+            .setup_max_send_wr(1)
+            .setup_max_send_sge(1)
+            .setup_max_recv_wr(1)
+            .setup_max_recv_sge(1)
+            .setup_send_cq(cq.clone())
+            .setup_recv_cq(cq)
+            .build_ex()
+            .map_err(|err| err.to_string())?;
+
+        qp.modify(&id.get_qp_attr(QueuePairState::Init).map_err(|err| err.to_string())?)
+            .map_err(|err| err.to_string())?;
+
+        Ok(qp)
+    }
+
+    fn move_test_qp_to_rts(id: &Identifier, qp: &mut ExtendedQueuePair) -> Result<(), String> {
+        qp.modify(
+            &id.get_qp_attr(QueuePairState::ReadyToReceive)
+                .map_err(|err| err.to_string())?,
+        )
+        .map_err(|err| err.to_string())?;
+        qp.modify(
+            &id.get_qp_attr(QueuePairState::ReadyToSend)
+                .map_err(|err| err.to_string())?,
+        )
+        .map_err(|err| err.to_string())
+    }
 
     #[test]
     fn test_cm_id_reference_count() -> Result<(), Box<dyn std::error::Error>> {
@@ -1064,7 +1343,7 @@ mod tests {
                     let key = 233;
 
                     assert_eq!(Arc::strong_count(&channel), 2);
-                    unsafe { poller.add(&channel, Event::readable(key)).unwrap() };
+                    unsafe { poller.add(&channel, PollingEvent::readable(key)).unwrap() };
 
                     let mut events = Events::new();
                     events.clear();
@@ -1131,7 +1410,143 @@ mod tests {
             Ok(channel) => {
                 let _id = channel.create_id(PortSpace::Tcp).unwrap();
 
-                let _param = ConnectionParameter::new();
+                let mut data = [0xa5; 196];
+                let mut param = ConnectionParameter::new();
+                param.setup_private_data(&data);
+
+                assert_eq!(param.0.private_data, param.1.as_ptr().cast());
+                assert_eq!(param.0.private_data_len, data.len() as u8);
+                assert_ne!(param.0.private_data, data.as_ptr().cast());
+
+                data[0] = 0x5a;
+                let stored_data = unsafe {
+                    std::slice::from_raw_parts(param.0.private_data as *const u8, param.0.private_data_len as usize)
+                };
+                assert_eq!(stored_data, &[0xa5; 196]);
+                assert_eq!(data[0], 0x5a);
+
+                param.setup_private_data(&[]);
+                assert!(param.0.private_data.is_null());
+                assert_eq!(param.0.private_data_len, 0);
+
+                Ok(())
+            },
+            Err(_) => Ok(()),
+        }
+    }
+
+    #[test]
+    fn test_connect_request_and_response_private_data() -> Result<(), Box<dyn std::error::Error>> {
+        match EventChannel::new() {
+            Ok(channel) => {
+                let Some(cm_addr) = first_ib_or_roce_v2_gid_addr() else {
+                    eprintln!(
+                        "skipping RDMA CM private-data test: no usable IB GID or non-link-local RoCEv2 GID found"
+                    );
+                    return Ok(());
+                };
+
+                let listener = channel.create_id(PortSpace::Tcp)?;
+                let port = 18515;
+                let server_addr = cm_addr.socket_addr(port);
+                let client_src_addr = cm_addr.socket_addr(0);
+                listener.bind_addr(server_addr)?;
+                listener.listen(1)?;
+
+                // Generate some data with different pattern, keep the first byte zero to make IB happy
+                let request_payload: [u8; CM_SETUP_PRIVATE_DATA_SIZE] = std::array::from_fn(|index| {
+                    if index == 0 {
+                        0
+                    } else {
+                        (index as u8).wrapping_mul(3).wrapping_add(1)
+                    }
+                });
+
+                let response_payload: [u8; CM_SETUP_PRIVATE_DATA_SIZE] =
+                    std::array::from_fn(|index| (index as u8).wrapping_mul(5).wrapping_add(3));
+
+                let server = thread::spawn(move || -> Result<Vec<u8>, String> {
+                    let event = channel.get_cm_event().map_err(|err| err.to_string())?;
+                    assert_eq!(event.event_type(), EventType::ConnectRequest);
+
+                    let request_private_data = event.private_data().to_vec();
+                    let conn_id = event
+                        .cm_id()
+                        .ok_or_else(|| "CONNECT_REQUEST did not provide a child CM ID".to_owned())?;
+
+                    let mut qp = create_test_qp(&conn_id)?;
+                    move_test_qp_to_rts(&conn_id, &mut qp)?;
+
+                    let mut accept_param = ConnectionParameter::default();
+                    accept_param.setup_qp_number(qp.qp_number());
+                    accept_param.setup_private_data(&response_payload);
+                    conn_id.accept(accept_param).map_err(|err| err.to_string())?;
+                    event.ack().map_err(|err| err.to_string())?;
+
+                    let established = channel.get_cm_event().map_err(|err| err.to_string())?;
+                    assert_eq!(established.event_type(), EventType::Established);
+                    established.ack().map_err(|err| err.to_string())?;
+
+                    Ok(request_private_data)
+                });
+
+                let client_channel = EventChannel::new()?;
+                let client_id = client_channel.create_id(PortSpace::Tcp)?;
+                client_id.resolve_addr(Some(client_src_addr), server_addr, Duration::from_secs(2))?;
+
+                let mut client_qp = None;
+                let response_private_data = loop {
+                    let event = client_channel.get_cm_event()?;
+                    match event.event_type() {
+                        EventType::AddressResolved => {
+                            client_id.resolve_route(Duration::from_secs(2))?;
+                            event.ack()?;
+                        },
+                        EventType::RouteResolved => {
+                            let qp = create_test_qp(&client_id).map_err(io::Error::other)?;
+                            let mut connect_param = ConnectionParameter::default();
+                            connect_param.setup_qp_number(qp.qp_number());
+                            connect_param.setup_private_data(&request_payload);
+                            client_id.connect(connect_param)?;
+                            client_qp = Some(qp);
+                            event.ack()?;
+                        },
+                        EventType::ConnectResponse => {
+                            let data = event.private_data().to_vec();
+                            let qp = client_qp
+                                .as_mut()
+                                .expect("client QP must exist before CONNECT_RESPONSE");
+                            move_test_qp_to_rts(&client_id, qp).map_err(io::Error::other)?;
+                            client_id.establish()?;
+                            event.ack()?;
+                            break data;
+                        },
+                        event_type => panic!("unexpected client RDMA CM event: {event_type:?}"),
+                    }
+                };
+
+                let request_private_data = server
+                    .join()
+                    .map_err(|panic| io::Error::other(format!("server thread panicked: {panic:?}")))?
+                    .map_err(io::Error::other)?;
+
+                // Valid field of private data from the RDMA CM event should be exactly the same as original data.
+                assert_eq!(
+                    &request_private_data[..CM_SETUP_PRIVATE_DATA_SIZE],
+                    request_payload.as_slice()
+                );
+                assert_eq!(
+                    &response_private_data[..CM_SETUP_PRIVATE_DATA_SIZE],
+                    response_payload.as_slice()
+                );
+
+                // The left over should be all zero.
+                assert!(request_private_data[CM_SETUP_PRIVATE_DATA_SIZE..]
+                    .iter()
+                    .all(|&byte| byte == 0));
+                assert!(response_private_data[CM_SETUP_PRIVATE_DATA_SIZE..]
+                    .iter()
+                    .all(|&byte| byte == 0));
 
                 Ok(())
             },
