@@ -166,9 +166,10 @@ use std::{io, mem::MaybeUninit, net::SocketAddr, ptr::NonNull, sync::Arc};
 
 use os_socketaddr::OsSocketAddr;
 use rdma_mummy_sys::{
-    ibv_qp_attr, ibv_qp_type, rdma_accept, rdma_ack_cm_event, rdma_bind_addr, rdma_cm_event, rdma_cm_event_type,
-    rdma_cm_id, rdma_conn_param, rdma_connect, rdma_create_event_channel, rdma_create_id, rdma_destroy_event_channel,
-    rdma_destroy_id, rdma_disconnect, rdma_establish, rdma_event_channel, rdma_get_cm_event, rdma_init_qp_attr,
+    ibv_context, ibv_qp_attr, ibv_qp_type, rdma_accept, rdma_ack_cm_event, rdma_bind_addr, rdma_cm_event,
+    rdma_cm_event_type, rdma_cm_id, rdma_conn_param, rdma_connect, rdma_create_event_channel, rdma_create_id,
+    rdma_destroy_event_channel, rdma_destroy_id, rdma_disconnect, rdma_establish, rdma_event_channel,
+    rdma_free_devices, rdma_get_cm_event, rdma_get_devices, rdma_get_local_addr, rdma_get_peer_addr, rdma_init_qp_attr,
     rdma_listen, rdma_migrate_id, rdma_port_space, rdma_reject, rdma_resolve_addr, rdma_resolve_route,
 };
 
@@ -502,6 +503,24 @@ pub enum GetQueuePairAttributeErrorKind {
     Rdmacm(#[from] io::Error),
 }
 
+/// Error returned by [`get_devices`] for getting RDMA devices opened by RDMA CM.
+#[derive(Debug, thiserror::Error)]
+#[error("failed to get rdma devices")]
+#[non_exhaustive]
+pub struct GetDevicesError(#[from] pub GetDevicesErrorKind);
+
+/// The enum type for [`GetDevicesError`].
+#[derive(Debug, thiserror::Error)]
+#[error(transparent)]
+#[non_exhaustive]
+pub enum GetDevicesErrorKind {
+    Rdmacm(#[from] io::Error),
+    #[error("rdma_get_devices returned invalid device count: {0}")]
+    InvalidDeviceCount(i32),
+    #[error("rdma_get_devices returned null context at index {0}")]
+    NullDeviceContext(usize),
+}
+
 impl Drop for EventChannel {
     fn drop(&mut self) {
         unsafe {
@@ -658,6 +677,105 @@ impl Drop for Event {
             rdma_ack_cm_event(self.event.as_mut());
         }
     }
+}
+
+struct RdmaDeviceList {
+    devices: NonNull<*mut ibv_context>,
+}
+
+#[repr(C)]
+struct SockAddrIb {
+    sib_family: libc::sa_family_t,
+    sib_pkey: u16,
+    sib_flowinfo: u32,
+    sib_addr: [u8; 16],
+    sib_sid: u64,
+    sib_sid_mask: u64,
+    sib_scope_id: u64,
+}
+
+impl Drop for RdmaDeviceList {
+    fn drop(&mut self) {
+        unsafe { rdma_free_devices(self.devices.as_ptr()) };
+    }
+}
+
+fn cached_device_context(context: NonNull<ibv_context>) -> Arc<DeviceContext> {
+    let mut guard = DEVICE_LISTS.lock().unwrap();
+    guard
+        .entry(context.as_ptr() as usize)
+        .or_insert_with(|| Arc::new(DeviceContext { context }))
+        .clone()
+}
+
+fn socket_addr_from_raw(addr: &libc::sockaddr) -> Option<SocketAddr> {
+    let len = match addr.sa_family as i32 {
+        libc::AF_INET => std::mem::size_of::<libc::sockaddr_in>(),
+        libc::AF_INET6 => std::mem::size_of::<libc::sockaddr_in6>(),
+        _ => return None,
+    };
+
+    unsafe { OsSocketAddr::copy_from_raw(addr, len as libc::socklen_t).into_addr() }
+}
+
+fn port_from_raw_addr(addr: &libc::sockaddr) -> u16 {
+    match addr.sa_family as i32 {
+        libc::AF_INET => {
+            let addr = unsafe { &*(std::ptr::from_ref(addr).cast::<libc::sockaddr_in>()) };
+            u16::from_be(addr.sin_port)
+        },
+        libc::AF_INET6 => {
+            let addr = unsafe { &*(std::ptr::from_ref(addr).cast::<libc::sockaddr_in6>()) };
+            u16::from_be(addr.sin6_port)
+        },
+        libc::AF_IB => {
+            let addr = unsafe { &*(std::ptr::from_ref(addr).cast::<SockAddrIb>()) };
+            u64::from_be(addr.sib_sid) as u16
+        },
+        _ => 0,
+    }
+}
+
+/// Get a list of RDMA devices currently available.
+///
+/// This wraps [`rdma_get_devices`], which returns a temporary array of
+/// RDMA-CM-opened device contexts. The temporary array is released with
+/// `rdma_free_devices`, while the returned [`DeviceContext`] handles are reused
+/// through this module's global context cache.
+///
+/// The cache is intentionally insertion-only. RDMA CM owns these opened
+/// contexts, and dropping a [`DeviceContext`] closes its raw context. Keeping a
+/// cached [`Arc`] alive prevents Rust from closing a context that librdmacm may
+/// still manage and reuse internally. This mirrors [`Identifier::get_device_context`]
+/// and does not attempt hot-unplug invalidation.
+///
+/// [`rdma_get_devices`]: https://man7.org/linux/man-pages/man3/rdma_get_devices.3.html
+pub fn get_devices() -> Result<Vec<Arc<DeviceContext>>, GetDevicesError> {
+    let mut num_devices = 0;
+    let devices = unsafe { rdma_get_devices(&mut num_devices) };
+
+    if devices.is_null() || num_devices == 0 {
+        return Ok(Vec::new());
+    }
+
+    let devices = RdmaDeviceList {
+        devices: unsafe { NonNull::new_unchecked(devices) },
+    };
+    let num_devices = usize::try_from(num_devices).map_err(|_| GetDevicesErrorKind::InvalidDeviceCount(num_devices))?;
+    let contexts = unsafe { std::slice::from_raw_parts(devices.devices.as_ptr(), num_devices) };
+    let mut guard = DEVICE_LISTS.lock().unwrap();
+
+    contexts
+        .iter()
+        .enumerate()
+        .map(|(index, &context)| -> Result<_, GetDevicesError> {
+            let context = NonNull::new(context).ok_or(GetDevicesErrorKind::NullDeviceContext(index))?;
+            Ok(guard
+                .entry(context.as_ptr() as usize)
+                .or_insert_with(|| Arc::new(DeviceContext { context }))
+                .clone())
+        })
+        .collect()
 }
 
 fn new_cm_id_for_raw(event_channel: Arc<EventChannel>, raw: *mut rdma_cm_id) -> Arc<Identifier> {
@@ -836,6 +954,36 @@ impl Identifier {
         unsafe { cm_id.as_ref().port_num }
     }
 
+    /// Get the local port number of a bound [`Identifier`] in host byte order. If the
+    /// [`Identifier`] is not bound to a port, the returned value is 0.
+    pub fn get_src_port(&self) -> u16 {
+        unsafe { port_from_raw_addr(rdma_get_local_addr(self.cm_id.as_ref())) }
+    }
+
+    /// Get the remote port number of a bound [`Identifier`] in host byte order. If the
+    /// [`Identifier`] is not connected, the returned value is 0.
+    pub fn get_dst_port(&self) -> u16 {
+        unsafe { port_from_raw_addr(rdma_get_peer_addr(self.cm_id.as_ref())) }
+    }
+
+    /// Get the local IP socket address of a bound [`Identifier`].
+    ///
+    /// Returns [`None`] when the RDMA CM address is not representable as
+    /// [`SocketAddr`], for example when the underlying address family is
+    /// `AF_IB`, or when the [`Identifier`] is not bound to an address.
+    pub fn get_local_addr(&self) -> Option<SocketAddr> {
+        unsafe { socket_addr_from_raw(rdma_get_local_addr(self.cm_id.as_ref())) }
+    }
+
+    /// Get the remote IP socket address of the [`Identifier`].
+    ///
+    /// Returns [`None`] when the RDMA CM address is not representable as
+    /// [`SocketAddr`], for example when the underlying address family is
+    /// `AF_IB`, or when the [`Identifier`] is not connected.
+    pub fn get_peer_addr(&self) -> Option<SocketAddr> {
+        unsafe { socket_addr_from_raw(rdma_get_peer_addr(self.cm_id.as_ref())) }
+    }
+
     /// Bind the [`Identifier`] to a specific address. Note that users shouldn't bind to a loopback
     /// address like `127.0.0.1`, or the connection would fail.
     ///
@@ -983,19 +1131,8 @@ impl Identifier {
         let cm_id = self.cm_id;
 
         unsafe {
-            if (*cm_id.as_ptr()).verbs.is_null() {
-                return None;
-            }
-
-            let mut guard = DEVICE_LISTS.lock().unwrap();
-            let device_ctx = guard.entry((*cm_id.as_ptr()).verbs as usize).or_insert_with(|| {
-                Arc::new(DeviceContext {
-                    // Safe due to the is_null() check above.
-                    context: NonNull::new((*cm_id.as_ptr()).verbs).unwrap(),
-                })
-            });
-
-            Some(device_ctx.clone())
+            let context = NonNull::new((*cm_id.as_ptr()).verbs)?;
+            Some(cached_device_context(context))
         }
     }
 
@@ -1648,6 +1785,7 @@ mod tests {
                 let res = id.bind_addr(address);
 
                 assert!(res.is_ok());
+                assert_eq!(id.get_src_port(), address.port());
 
                 let new_id = channel.create_id(PortSpace::Tcp).unwrap();
 
@@ -1695,6 +1833,71 @@ mod tests {
                 Ok(())
             },
             Err(_) => Ok(()),
+        }
+    }
+
+    #[test]
+    fn test_socket_addr_and_port_from_raw() {
+        let ipv4 = SocketAddr::from((std::net::Ipv4Addr::new(192, 0, 2, 1), 18515));
+        let raw_ipv4 = OsSocketAddr::from(ipv4);
+        assert_eq!(
+            unsafe { socket_addr_from_raw(raw_ipv4.as_ptr().as_ref().unwrap()) },
+            Some(ipv4)
+        );
+        assert_eq!(
+            unsafe { port_from_raw_addr(raw_ipv4.as_ptr().as_ref().unwrap()) },
+            18515
+        );
+
+        let ipv6 = SocketAddr::from((std::net::Ipv6Addr::LOCALHOST, 18516));
+        let raw_ipv6 = OsSocketAddr::from(ipv6);
+        assert_eq!(
+            unsafe { socket_addr_from_raw(raw_ipv6.as_ptr().as_ref().unwrap()) },
+            Some(ipv6)
+        );
+        assert_eq!(
+            unsafe { port_from_raw_addr(raw_ipv6.as_ptr().as_ref().unwrap()) },
+            18516
+        );
+
+        let ib = SockAddrIb {
+            sib_family: libc::AF_IB as _,
+            sib_pkey: 0,
+            sib_flowinfo: 0,
+            sib_addr: [0; 16],
+            sib_sid: u64::to_be(18517),
+            sib_sid_mask: 0,
+            sib_scope_id: 0,
+        };
+        let ib_addr = unsafe { &*(std::ptr::from_ref(&ib).cast::<libc::sockaddr>()) };
+        assert_eq!(socket_addr_from_raw(ib_addr), None);
+        assert_eq!(port_from_raw_addr(ib_addr), 18517);
+
+        let unsupported = libc::sockaddr {
+            sa_family: libc::AF_UNIX as _,
+            sa_data: [0; 14],
+        };
+        assert_eq!(socket_addr_from_raw(&unsupported), None);
+        assert_eq!(port_from_raw_addr(&unsupported), 0);
+    }
+
+    #[test]
+    fn test_get_devices_smoke_and_cache() {
+        let devices = match get_devices() {
+            Ok(devices) => devices,
+            Err(err) => {
+                eprintln!("skipping RDMA CM get_devices smoke test: {err}");
+                return;
+            },
+        };
+
+        let second = get_devices().expect("second rdma_get_devices call should be consistent after first success");
+        assert_eq!(devices.len(), second.len());
+        for (first, second) in devices.iter().zip(second.iter()) {
+            assert!(
+                Arc::ptr_eq(first, second),
+                "rdma_get_devices contexts should reuse the global DeviceContext cache"
+            );
         }
     }
 
@@ -1762,6 +1965,7 @@ mod tests {
                     let event = client_channel.get_cm_event()?;
                     match event.event_type() {
                         EventType::AddressResolved => {
+                            assert_eq!(client_id.get_dst_port(), server_addr.port());
                             client_id.resolve_route(Duration::from_secs(2))?;
                             event.ack()?;
                         },
