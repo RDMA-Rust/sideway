@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0](https://github.com/RDMA-Rust/sideway/compare/v0.4.3...v0.5.0) - 2026-07-12
+
+### Added
+
+- *(rdmacm)* add wrapper for rdma_migrate_id
+- *(rdmacm)* support setting private data in rdmacm conn param
+
+### Other
+
+- remove cirrus ci configuration as they stop providing CI service
+
 ## [0.4.3](https://github.com/RDMA-Rust/sideway/compare/v0.4.2...v0.4.3) - 2026-06-04
 
 ### Added
