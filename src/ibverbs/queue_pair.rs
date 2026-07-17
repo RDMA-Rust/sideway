@@ -402,7 +402,7 @@ pub trait QueuePair {
     //      https://github.com/rust-lang/rfcs/pull/3425
     //      https://github.com/rust-lang/rust/issues/125836
     //
-    fn start_post_send(&mut self) -> Self::Guard<'_>;
+    fn start_post_send(&self) -> Self::Guard<'_>;
 
     /// Starts a post receive operation, every [`QueuePair`] should hold only one [`PostRecvGuard`]
     /// at the same time.
@@ -906,7 +906,7 @@ impl QueuePair for BasicQueuePair {
         = BasicPostSendGuard<'g>
     where
         Self: 'g;
-    fn start_post_send(&mut self) -> Self::Guard<'_> {
+    fn start_post_send(&self) -> Self::Guard<'_> {
         BasicPostSendGuard {
             qp: self.qp,
             wrs: Vec::with_capacity(0),
@@ -956,7 +956,7 @@ impl QueuePair for ExtendedQueuePair {
         = ExtendedPostSendGuard<'g>
     where
         Self: 'g;
-    fn start_post_send(&mut self) -> Self::Guard<'_> {
+    fn start_post_send(&self) -> Self::Guard<'_> {
         unsafe {
             ibv_wr_start(self.qp().as_ptr() as _);
         }
@@ -2079,7 +2079,7 @@ impl QueuePair for GenericQueuePair {
     where
         Self: 'g;
 
-    fn start_post_send(&mut self) -> Self::Guard<'_> {
+    fn start_post_send(&self) -> Self::Guard<'_> {
         match self {
             GenericQueuePair::Basic(qp) => GenericPostSendGuard::Basic(qp.start_post_send()),
             GenericQueuePair::Extended(qp) => GenericPostSendGuard::Extended(qp.start_post_send()),
