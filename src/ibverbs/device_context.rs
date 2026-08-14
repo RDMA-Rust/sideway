@@ -465,6 +465,16 @@ impl PortAttr {
         self.attr.gid_tbl_len
     }
 
+    /// Get the base local identifier (LID) assigned to this port.
+    ///
+    /// InfiniBand routes by LID within a subnet, so this is what a peer needs
+    /// in order to address this port. The subnet manager assigns it
+    /// asynchronously, and `0` means it has not done so yet. Ethernet ports
+    /// have no LIDs and always read `0`.
+    pub fn lid(&self) -> u16 {
+        self.attr.lid
+    }
+
     /// Get the link layer protocol used by this port.
     pub fn link_layer(&self) -> LinkLayer {
         self.attr.link_layer.into()
@@ -836,6 +846,20 @@ impl DeviceInfo for DeviceContext {
 mod tests {
     use super::*;
     use crate::ibverbs::device::{self, DeviceInfo};
+
+    #[test]
+    fn test_port_attr_lid() {
+        let mut attr = unsafe { MaybeUninit::<ibv_port_attr>::zeroed().assume_init() };
+        attr.lid = 0x811f;
+
+        let attr = PortAttr { attr };
+        assert_eq!(attr.lid(), 0x811f);
+
+        // The subnet manager has not reached the port yet, and every Ethernet
+        // port reads this permanently.
+        let unassigned = unsafe { MaybeUninit::<ibv_port_attr>::zeroed().assume_init() };
+        assert_eq!(PortAttr { attr: unassigned }.lid(), 0);
+    }
 
     #[test]
     fn test_query_rt_values_ex() -> Result<(), Box<dyn std::error::Error>> {
