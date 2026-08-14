@@ -45,7 +45,17 @@ use sideway::ibverbs::queue_pair::{
 };
 use sideway::ibverbs::AccessFlags;
 
-use byte_unit::{Byte, UnitType};
+/// Format a byte count with the largest binary unit that keeps it >= 1.
+fn binary_unit(bytes: f64) -> String {
+    const UNITS: [&str; 7] = ["B", "KiB", "MiB", "GiB", "TiB", "PiB", "EiB"];
+    let mut value = bytes;
+    let mut unit = 0;
+    while value >= 1024.0 && unit + 1 < UNITS.len() {
+        value /= 1024.0;
+        unit += 1;
+    }
+    format!("{value:.2} {}", UNITS[unit])
+}
 
 const SEND_WR_ID: u64 = 0;
 const RECV_WR_ID: u64 = 1;
@@ -508,12 +518,10 @@ fn main() -> anyhow::Result<()> {
     // bi-directional bandwidth
     let bytes_per_second = bytes as f64 / time.as_secs_f64();
     println!(
-        "{} bytes in {:.2} seconds = {:.2}/s",
+        "{} bytes in {:.2} seconds = {}/s",
         bytes,
         time.as_secs_f64(),
-        Byte::from_f64(bytes_per_second)
-            .unwrap()
-            .get_appropriate_unit(UnitType::Binary)
+        binary_unit(bytes_per_second)
     );
     println!(
         "{} iters in {:.2} seconds = {:#.2?}/iter",
