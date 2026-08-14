@@ -5,16 +5,18 @@ use std::fmt;
 use std::fs;
 use std::io;
 use std::mem::MaybeUninit;
+use std::os::fd::RawFd;
 use std::ptr::{self, NonNull};
 use std::sync::Arc;
 
 use bitmask_enum::bitmask;
 use rdma_mummy_sys::{
-    ibv_alloc_pd, ibv_close_device, ibv_context, ibv_device_attr_ex, ibv_get_device_guid, ibv_get_device_name,
-    ibv_gid_entry, ibv_mtu, ibv_port_attr, ibv_port_state, ibv_query_device_ex, ibv_query_gid, ibv_query_gid_ex,
-    ibv_query_gid_table, ibv_query_gid_type, ibv_query_port, ibv_query_rt_values_ex, ibv_values_ex, ibv_values_mask,
-    IBV_GID_TYPE_IB, IBV_GID_TYPE_ROCE_V1, IBV_GID_TYPE_ROCE_V2, IBV_GID_TYPE_SYSFS_IB_ROCE_V1,
-    IBV_GID_TYPE_SYSFS_ROCE_V2, IBV_LINK_LAYER_ETHERNET, IBV_LINK_LAYER_INFINIBAND, IBV_LINK_LAYER_UNSPECIFIED,
+    ibv_ack_async_event, ibv_alloc_pd, ibv_async_event, ibv_close_device, ibv_context, ibv_device_attr_ex,
+    ibv_event_type, ibv_get_async_event, ibv_get_device_guid, ibv_get_device_name, ibv_gid_entry, ibv_mtu,
+    ibv_port_attr, ibv_port_state, ibv_query_device_ex, ibv_query_gid, ibv_query_gid_ex, ibv_query_gid_table,
+    ibv_query_gid_type, ibv_query_port, ibv_query_rt_values_ex, ibv_values_ex, ibv_values_mask, IBV_GID_TYPE_IB,
+    IBV_GID_TYPE_ROCE_V1, IBV_GID_TYPE_ROCE_V2, IBV_GID_TYPE_SYSFS_IB_ROCE_V1, IBV_GID_TYPE_SYSFS_ROCE_V2,
+    IBV_LINK_LAYER_ETHERNET, IBV_LINK_LAYER_INFINIBAND, IBV_LINK_LAYER_UNSPECIFIED,
 };
 use serde::{Deserialize, Serialize};
 
@@ -81,6 +83,20 @@ pub struct QueryPortError {
 #[error(transparent)]
 #[non_exhaustive]
 pub enum QueryPortErrorKind {
+    Ibverbs(#[from] io::Error),
+}
+
+/// Error returned by [`DeviceContext::next_async_event`] for reading an asynchronous event.
+#[derive(Debug, thiserror::Error)]
+#[error("failed to get async event")]
+#[non_exhaustive]
+pub struct GetAsyncEventError(#[from] pub GetAsyncEventErrorKind);
+
+/// The enum type for [`GetAsyncEventError`].
+#[derive(Debug, thiserror::Error)]
+#[error(transparent)]
+#[non_exhaustive]
+pub enum GetAsyncEventErrorKind {
     Ibverbs(#[from] io::Error),
 }
 
@@ -444,6 +460,126 @@ impl From<u8> for PhysicalState {
     }
 }
 
+/// The kind of an asynchronous event reported by the device.
+///
+/// Unrecognised values are preserved rather than rejected: the set grows with
+/// the kernel, and an event a caller does not know about still has to be
+/// acknowledged.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum AsyncEventType {
+    /// A completion queue is in an error state.
+    CqError,
+    /// A queue pair hit an error that moved it out of a usable state.
+    QpFatal,
+    /// A request to a queue pair was malformed.
+    QpRequestError,
+    /// A request violated a queue pair's access permissions.
+    QpAccessError,
+    /// Communication has been established on a queue pair.
+    CommunicationEstablished,
+    /// A send queue has drained.
+    SendQueueDrained,
+    /// A path has been migrated.
+    PathMigrated,
+    /// A path migration failed.
+    PathMigrationError,
+    /// The device is in an unrecoverable error state.
+    DeviceFatal,
+    /// A port became active and can now carry traffic.
+    PortActive,
+    /// A port left the active state.
+    PortError,
+    /// The subnet manager assigned this port a different LID. Anything holding
+    /// the old one -- address vectors, published endpoints -- is now stale.
+    LidChange,
+    /// The port's partition key table changed.
+    PkeyChange,
+    /// A different subnet manager is now managing this port.
+    SmChange,
+    /// A shared receive queue is in an error state.
+    SrqError,
+    /// A shared receive queue reached its limit.
+    SrqLimitReached,
+    /// The last work queue entry was reached on a queue pair.
+    QpLastWqeReached,
+    /// The subnet manager asked clients to re-register. Typically follows an
+    /// SM restart, and implies the port's configuration may have changed.
+    ClientReregister,
+    /// The port's GID table changed.
+    GidChange,
+    /// A work queue is in an error state.
+    WqFatal,
+    /// The device's link speed changed.
+    DeviceSpeedChange,
+    /// A type this build does not recognise, carried through so it can still
+    /// be acknowledged.
+    Unknown(u32),
+}
+
+impl From<ibv_event_type> for AsyncEventType {
+    fn from(event_type: ibv_event_type) -> Self {
+        // Matched on the discriminant rather than the variants: the provider
+        // can report a value this build's bindings do not name, and treating
+        // that as one of the known variants would be a lie.
+        match event_type as u32 {
+            v if v == ibv_event_type::IBV_EVENT_CQ_ERR as u32 => AsyncEventType::CqError,
+            v if v == ibv_event_type::IBV_EVENT_QP_FATAL as u32 => AsyncEventType::QpFatal,
+            v if v == ibv_event_type::IBV_EVENT_QP_REQ_ERR as u32 => AsyncEventType::QpRequestError,
+            v if v == ibv_event_type::IBV_EVENT_QP_ACCESS_ERR as u32 => AsyncEventType::QpAccessError,
+            v if v == ibv_event_type::IBV_EVENT_COMM_EST as u32 => AsyncEventType::CommunicationEstablished,
+            v if v == ibv_event_type::IBV_EVENT_SQ_DRAINED as u32 => AsyncEventType::SendQueueDrained,
+            v if v == ibv_event_type::IBV_EVENT_PATH_MIG as u32 => AsyncEventType::PathMigrated,
+            v if v == ibv_event_type::IBV_EVENT_PATH_MIG_ERR as u32 => AsyncEventType::PathMigrationError,
+            v if v == ibv_event_type::IBV_EVENT_DEVICE_FATAL as u32 => AsyncEventType::DeviceFatal,
+            v if v == ibv_event_type::IBV_EVENT_PORT_ACTIVE as u32 => AsyncEventType::PortActive,
+            v if v == ibv_event_type::IBV_EVENT_PORT_ERR as u32 => AsyncEventType::PortError,
+            v if v == ibv_event_type::IBV_EVENT_LID_CHANGE as u32 => AsyncEventType::LidChange,
+            v if v == ibv_event_type::IBV_EVENT_PKEY_CHANGE as u32 => AsyncEventType::PkeyChange,
+            v if v == ibv_event_type::IBV_EVENT_SM_CHANGE as u32 => AsyncEventType::SmChange,
+            v if v == ibv_event_type::IBV_EVENT_SRQ_ERR as u32 => AsyncEventType::SrqError,
+            v if v == ibv_event_type::IBV_EVENT_SRQ_LIMIT_REACHED as u32 => AsyncEventType::SrqLimitReached,
+            v if v == ibv_event_type::IBV_EVENT_QP_LAST_WQE_REACHED as u32 => AsyncEventType::QpLastWqeReached,
+            v if v == ibv_event_type::IBV_EVENT_CLIENT_REREGISTER as u32 => AsyncEventType::ClientReregister,
+            v if v == ibv_event_type::IBV_EVENT_GID_CHANGE as u32 => AsyncEventType::GidChange,
+            v if v == ibv_event_type::IBV_EVENT_WQ_FATAL as u32 => AsyncEventType::WqFatal,
+            v if v == ibv_event_type::IBV_EVENT_DEVICE_SPEED_CHANGE as u32 => AsyncEventType::DeviceSpeedChange,
+            other => AsyncEventType::Unknown(other),
+        }
+    }
+}
+
+impl AsyncEventType {
+    /// Whether the event describes a port rather than a queue, and therefore
+    /// carries a port number.
+    fn is_port_scoped(&self) -> bool {
+        matches!(
+            self,
+            AsyncEventType::PortActive
+                | AsyncEventType::PortError
+                | AsyncEventType::LidChange
+                | AsyncEventType::PkeyChange
+                | AsyncEventType::SmChange
+                | AsyncEventType::ClientReregister
+                | AsyncEventType::GidChange
+        )
+    }
+}
+
+/// One asynchronous event, already acknowledged.
+///
+/// The payload is copied out before the acknowledgement, so holding this does
+/// not hold a device resource.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct AsyncEvent {
+    /// What happened.
+    pub event_type: AsyncEventType,
+    /// The port it happened on, for port-scoped events. The queue-scoped
+    /// events name a queue instead, which this does not carry.
+    pub port_num: Option<u8>,
+}
+
 /// The attributes of a port of an RDMA device context.
 pub struct PortAttr {
     attr: ibv_port_attr,
@@ -604,6 +740,45 @@ impl DeviceContext {
     }
 
     /// Query the attributes of a physical port.
+    /// The file descriptor asynchronous events arrive on.
+    ///
+    /// [`next_async_event`](Self::next_async_event) blocks while the queue is
+    /// empty, so a caller that must stay responsive -- to shut down, say --
+    /// polls this first and only reads once it is readable.
+    pub fn async_fd(&self) -> RawFd {
+        unsafe { self.context.as_ref().async_fd }
+    }
+
+    /// Read one asynchronous event, acknowledging it before returning.
+    ///
+    /// **Blocks** while no event is queued; see [`async_fd`](Self::async_fd).
+    ///
+    /// Every event must be acknowledged, including ones the caller does not
+    /// care about, because an outstanding event blocks device teardown. That
+    /// is why this acknowledges on the caller's behalf rather than handing
+    /// back something with a destructor to forget.
+    pub fn next_async_event(&self) -> Result<AsyncEvent, GetAsyncEventError> {
+        let mut event = MaybeUninit::<ibv_async_event>::uninit();
+        let ret = unsafe { ibv_get_async_event(self.context.as_ptr(), event.as_mut_ptr()) };
+        if ret != 0 {
+            return Err(GetAsyncEventErrorKind::Ibverbs(io::Error::last_os_error()).into());
+        }
+
+        // Copy the payload out before acknowledging: the acknowledgement is
+        // what allows the provider to reuse the event.
+        let event = unsafe { event.assume_init() };
+        let event_type: AsyncEventType = event.event_type.into();
+        let port_num = if event_type.is_port_scoped() {
+            Some(unsafe { event.element.port_num } as u8)
+        } else {
+            None
+        };
+
+        unsafe { ibv_ack_async_event(&event as *const _ as *mut _) };
+
+        Ok(AsyncEvent { event_type, port_num })
+    }
+
     pub fn query_port(&self, port_num: u8) -> Result<PortAttr, QueryPortError> {
         let mut attr = MaybeUninit::<ibv_port_attr>::uninit();
         unsafe {
@@ -846,6 +1021,34 @@ impl DeviceInfo for DeviceContext {
 mod tests {
     use super::*;
     use crate::ibverbs::device::{self, DeviceInfo};
+
+    #[test]
+    fn test_async_event_type_from_raw() {
+        assert_eq!(
+            AsyncEventType::from(ibv_event_type::IBV_EVENT_LID_CHANGE),
+            AsyncEventType::LidChange
+        );
+        assert_eq!(
+            AsyncEventType::from(ibv_event_type::IBV_EVENT_CLIENT_REREGISTER),
+            AsyncEventType::ClientReregister
+        );
+        assert_eq!(
+            AsyncEventType::from(ibv_event_type::IBV_EVENT_CQ_ERR),
+            AsyncEventType::CqError
+        );
+    }
+
+    #[test]
+    fn test_port_scoped_events() {
+        // These carry a port number; the queue-scoped ones name a queue, and
+        // reading port_num out of that union would be nonsense.
+        assert!(AsyncEventType::LidChange.is_port_scoped());
+        assert!(AsyncEventType::PortActive.is_port_scoped());
+        assert!(AsyncEventType::SmChange.is_port_scoped());
+        assert!(!AsyncEventType::CqError.is_port_scoped());
+        assert!(!AsyncEventType::QpFatal.is_port_scoped());
+        assert!(!AsyncEventType::Unknown(999).is_port_scoped());
+    }
 
     #[test]
     fn test_port_attr_lid() {
