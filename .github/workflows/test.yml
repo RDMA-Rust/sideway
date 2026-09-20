@@ -24,11 +24,9 @@ jobs:
           if modinfo mlx5_ib >/dev/null 2>&1 && lsmod | grep -q '^mlx5_ib'; then
             sudo rmmod mlx5_ib
           fi
-          if modinfo mana >/dev/null 2>&1 && lsmod | grep -q '^mana'; then
-            sudo rmmod mana
-          fi
           cd ${{ github.workspace }}
           sudo apt install libibverbs1 librdmacm1 ibverbs-utils
+          sudo rm /etc/libibverbs.d/mana.driver
           sudo ibv_devinfo || true
           cargo clippy --all-targets -- -D warnings
           cargo test
@@ -69,13 +67,11 @@ jobs:
           ./rdma-core/build.sh
       - name: Test with RXE
         run: |
+          rm ./rdma-core/build/etc/libibverbs.d/mana.driver
           export LD_LIBRARY_PATH=./rdma-core/build/lib
           cargo llvm-cov --no-report run --example ibv_devinfo
           if modinfo mlx5_ib >/dev/null 2>&1 && lsmod | grep -q '^mlx5_ib'; then
             sudo rmmod mlx5_ib
-          fi
-          if modinfo mana >/dev/null 2>&1 && lsmod | grep -q '^mana'; then
-            sudo rmmod mana
           fi
           just test-basic-with-cov
           just test-rc-pingpong-with-cov
