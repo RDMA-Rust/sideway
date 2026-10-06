@@ -1,0 +1,10 @@
+error[E0133]: call to unsafe function `LocalBufferHandle::<'_, G>::setup_ud_addr` is unsafe and requires unsafe function or block
+  --> tests/post_send_guard/ud_address_requires_unsafe.rs:7:5
+   |
+ 7 | /     guard
+ 8 | |         .construct_wr(1, WorkRequestFlags::Signaled)
+ 9 | |         .setup_send()
+10 | |         .setup_ud_addr(ah, 1, 1);
+   | |________________________________^ call to unsafe function
+   |
+   = note: consult the function's documentation for information on how to avoid undefined behavior
