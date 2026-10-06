@@ -9,6 +9,7 @@ use std::ptr::NonNull;
 use std::sync::Arc;
 
 use super::{
+    address::{AddressHandle, AddressHandleAttribute, CreateAddressHandleError},
     device_context::DeviceContext,
     memory_region::{MemoryRegion, RegisterMemoryRegionError},
     queue_pair::QueuePairBuilder,
@@ -96,6 +97,15 @@ impl ProtectionDomain {
             fd,
             access,
         )?))
+    }
+
+    /// Create a new address handle on this protection domain.
+    ///
+    /// The attributes are copied internally before being passed to libibverbs.
+    pub fn create_ah(
+        self: &Arc<Self>, attr: &AddressHandleAttribute,
+    ) -> Result<Arc<AddressHandle>, CreateAddressHandleError> {
+        Ok(Arc::new(AddressHandle::new(Arc::clone(self), attr)?))
     }
 
     /// Create a [`QueuePairBuilder`] for building QPs on this protection domain
