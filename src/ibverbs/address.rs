@@ -2,12 +2,31 @@
 //! in RDMA communication, like [`Gid`] and [`AddressHandleAttribute`].
 use libc::IF_NAMESIZE;
 use rdma_mummy_sys::{
-    ibv_ah_attr, ibv_gid, ibv_gid_entry, ibv_global_route, IBV_GID_TYPE_IB, IBV_GID_TYPE_ROCE_V1, IBV_GID_TYPE_ROCE_V2,
+    ibv_ah, ibv_ah_attr, ibv_create_ah, ibv_destroy_ah, ibv_gid, ibv_gid_entry, ibv_global_route, IBV_GID_TYPE_IB,
+    IBV_GID_TYPE_ROCE_V1, IBV_GID_TYPE_ROCE_V2,
 };
 use serde::{Deserialize, Serialize};
 use std::ffi::CStr;
 use std::io;
+use std::ptr::NonNull;
+use std::sync::Arc;
 use std::{fmt, mem::MaybeUninit, net::Ipv6Addr};
+
+use super::protection_domain::ProtectionDomain;
+
+/// Error returned by [`ProtectionDomain::create_ah`] for creating a new RDMA Address Handle.
+#[derive(Debug, thiserror::Error)]
+#[error("failed to create address handle")]
+#[non_exhaustive]
+pub struct CreateAddressHandleError(#[from] pub CreateAddressHandleErrorKind);
+
+/// The enum type for [`CreateAddressHandleError`].
+#[derive(Debug, thiserror::Error)]
+#[error(transparent)]
+#[non_exhaustive]
+pub enum CreateAddressHandleErrorKind {
+    Ibverbs(#[from] io::Error),
+}
 
 /// GID is a global identifier for sending packets between different subnets. For RoCEv1 and RoCEv2,
 /// it would correspond to an IP address set up on the ethernet device.
@@ -175,6 +194,7 @@ impl GidEntry {
 /// [`PostSendGuard`]: crate::ibverbs::queue_pair::PostSendGuard
 /// [`UnreliableDatagram`]: crate::ibverbs::queue_pair::QueuePairType::UnreliableDatagram
 ///
+#[derive(Clone, Copy)]
 pub struct AddressHandleAttribute {
     pub(crate) attr: ibv_ah_attr,
 }
@@ -250,6 +270,56 @@ impl AddressHandleAttribute {
         self
     }
 }
+
+/// An object which describes the path to the remote side used in
+/// [`UnreliableDatagram`] [`QueuePair`].
+///
+/// [`UnreliableDatagram`]: super::queue_pair::QueuePairType::UnreliableDatagram
+/// [`QueuePair`]: super::queue_pair::QueuePair
+///
+#[derive(Debug)]
+pub struct AddressHandle {
+    ah: NonNull<ibv_ah>,
+    _pd: Arc<ProtectionDomain>,
+}
+
+impl Drop for AddressHandle {
+    fn drop(&mut self) {
+        unsafe {
+            ibv_destroy_ah(self.ah.as_ptr());
+        }
+    }
+}
+
+impl AddressHandle {
+    pub(crate) fn new(
+        pd: Arc<ProtectionDomain>, attr: &AddressHandleAttribute,
+    ) -> Result<Self, CreateAddressHandleError> {
+        let pd_ptr = unsafe { pd.pd() };
+        let mut ah_attr = attr.attr;
+
+        let ah = unsafe { ibv_create_ah(pd_ptr.as_ptr(), &mut ah_attr) };
+
+        Ok(AddressHandle {
+            ah: NonNull::new(ah).ok_or::<CreateAddressHandleError>(
+                CreateAddressHandleErrorKind::Ibverbs(io::Error::last_os_error()).into(),
+            )?,
+            _pd: pd,
+        })
+    }
+
+    /// # Safety
+    ///
+    /// Return the handle of address handle.
+    /// We mark this method unsafe because the lifetime of `ibv_ah` is not associated
+    /// with the return value.
+    pub unsafe fn ah(&self) -> NonNull<ibv_ah> {
+        self.ah
+    }
+}
+
+unsafe impl Send for AddressHandle {}
+unsafe impl Sync for AddressHandle {}
 
 #[cfg(test)]
 mod tests {
