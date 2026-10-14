@@ -8,7 +8,7 @@ use rdma_mummy_sys::{
     ibv_rx_hash_conf, ibv_send_flags, ibv_send_wr, ibv_sge, ibv_wr_abort, ibv_wr_atomic_cmp_swp,
     ibv_wr_atomic_fetch_add, ibv_wr_complete, ibv_wr_opcode, ibv_wr_rdma_read, ibv_wr_rdma_write,
     ibv_wr_rdma_write_imm, ibv_wr_send, ibv_wr_send_imm, ibv_wr_set_inline_data, ibv_wr_set_inline_data_list,
-    ibv_wr_set_sge, ibv_wr_set_sge_list, ibv_wr_start,
+    ibv_wr_set_sge, ibv_wr_set_sge_list, ibv_wr_set_ud_addr, ibv_wr_start,
 };
 use std::sync::{Arc, LazyLock};
 use std::{
@@ -20,7 +20,7 @@ use std::{
 };
 
 use super::{
-    address::{AddressHandleAttribute, Gid},
+    address::{AddressHandle, AddressHandleAttribute, Gid},
     completion::{CompletionQueue, GenericCompletionQueue},
     device_context::Mtu,
     protection_domain::ProtectionDomain,
@@ -427,7 +427,9 @@ pub trait QueuePair {
 mod private_traits {
     use std::io::IoSlice;
 
+    use crate::ibverbs::address::AddressHandle;
     use rdma_mummy_sys::ibv_sge;
+
     // This is the private part of PostSendGuard, which is a workaround for pub trait
     // not being able to have private functions.
     //
@@ -455,6 +457,8 @@ mod private_traits {
         unsafe fn setup_sge(&mut self, lkey: u32, addr: u64, length: u32);
 
         unsafe fn setup_sge_list(&mut self, sg_list: &[ibv_sge]);
+
+        unsafe fn setup_ud_addr(&mut self, ah: &AddressHandle, remote_qpn: u32, remote_qkey: u32);
     }
 }
 
@@ -1253,9 +1257,21 @@ impl QueuePairAttribute {
         self
     }
 
+    /// Setup the queue key (QKey) for this [`QueuePair`].
+    pub fn setup_qkey(&mut self, qkey: u32) -> &mut Self {
+        self.attr.qkey = qkey;
+        self.attr_mask |= QueuePairAttributeMask::QueueKey;
+        self
+    }
+
     /// Get the primary physical port number you filled in or queried from [`QueuePair::query`].
     pub fn port(&self) -> u8 {
         self.attr.port_num
+    }
+
+    /// Get the queue key (QKey) you filled in or queried from [`QueuePair::query`].
+    pub fn qkey(&self) -> u32 {
+        self.attr.qkey
     }
 
     /// Setup allowed remote operations for incoming packets. It's either 0 or
@@ -1611,10 +1627,33 @@ pub trait SetInlineData {
     fn setup_inline_data_list(self, bufs: &[IoSlice<'_>]);
 }
 
-/// A handle to set local buffer for RDMA Send & RDMA Write request, a [`QueuePair`] should hold
-/// only one [`LocalBufferHandle`] at the same time.
+/// A handle to set the destination and local buffer of an initialized work request. A
+/// [`QueuePair`] should hold only one [`LocalBufferHandle`] at the same time.
 pub struct LocalBufferHandle<'g, G: PostSendGuard> {
     guard: &'g mut G,
+}
+
+impl<G: PostSendGuard> LocalBufferHandle<'_, G> {
+    /// Set the address-handle destination after selecting the work request operation and
+    /// before setting its local buffer.
+    ///
+    /// Standard UD QPs support SEND and SEND_WITH_IMM. Provider-specific extended QPs,
+    /// such as EFA SRD, may also support AH addressing for RDMA READ, WRITE, and WRITE_WITH_IMM.
+    /// This does not retain `ah` or tie its lifetime to the returned handle.
+    ///
+    /// # Safety
+    ///
+    /// The QP/provider and selected operation must support AH-based addressing. For extended
+    /// QPs, the operation must have been enabled at QP creation. With [`BasicPostSendGuard`],
+    /// only SEND and SEND_WITH_IMM are supported: the native UD and RDMA fields share a union.
+    ///
+    /// `ah` must belong to the same protection domain as the QP. Keep `ah` alive and unmodified
+    /// until the request has completed and its completion has been retrieved, or the queue
+    /// pair has been destroyed. This also applies if posting a batch only partially succeeds.
+    pub unsafe fn setup_ud_addr(self, ah: &AddressHandle, remote_qpn: u32, remote_qkey: u32) -> Self {
+        self.guard.setup_ud_addr(ah, remote_qpn, remote_qkey);
+        self
+    }
 }
 
 impl<G: PostSendGuard> SetInlineData for LocalBufferHandle<'_, G> {
@@ -1851,6 +1890,12 @@ impl private_traits::PostSendGuard for BasicPostSendGuard<'_> {
         self.sges.extend_from_slice(sg_list);
         self.wrs.last_mut().unwrap_unchecked().num_sge = sg_list.len() as _;
     }
+
+    unsafe fn setup_ud_addr(&mut self, ah: &AddressHandle, remote_qpn: u32, remote_qkey: u32) {
+        self.wrs.last_mut().unwrap().wr.ud.ah = unsafe { ah.ah().as_ptr() };
+        self.wrs.last_mut().unwrap().wr.ud.remote_qpn = remote_qpn;
+        self.wrs.last_mut().unwrap().wr.ud.remote_qkey = remote_qkey;
+    }
 }
 
 /// The extended [`PostSendGuard`] that works for [`ExtendedQueuePair`] which supports [`ibv_wr_*`]
@@ -1949,6 +1994,12 @@ impl private_traits::PostSendGuard for ExtendedPostSendGuard<'_> {
 
     unsafe fn setup_sge_list(&mut self, sg_list: &[ibv_sge]) {
         ibv_wr_set_sge_list(self.qp_ex.as_ptr(), sg_list.len(), sg_list.as_ptr());
+    }
+
+    unsafe fn setup_ud_addr(&mut self, ah: &AddressHandle, remote_qpn: u32, remote_qkey: u32) {
+        unsafe {
+            ibv_wr_set_ud_addr(self.qp_ex.as_ptr(), ah.ah().as_ptr(), remote_qpn, remote_qkey);
+        }
     }
 }
 
@@ -2191,6 +2242,13 @@ impl private_traits::PostSendGuard for GenericPostSendGuard<'_> {
         match self {
             GenericPostSendGuard::Basic(guard) => guard.setup_sge_list(sg_list),
             GenericPostSendGuard::Extended(guard) => guard.setup_sge_list(sg_list),
+        }
+    }
+
+    unsafe fn setup_ud_addr(&mut self, ah: &AddressHandle, remote_qpn: u32, remote_qkey: u32) {
+        match self {
+            GenericPostSendGuard::Basic(guard) => guard.setup_ud_addr(ah, remote_qpn, remote_qkey),
+            GenericPostSendGuard::Extended(guard) => guard.setup_ud_addr(ah, remote_qpn, remote_qkey),
         }
     }
 }

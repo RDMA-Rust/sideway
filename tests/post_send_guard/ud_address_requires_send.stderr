@@ -1,0 +1,13 @@
+error[E0599]: no method named `setup_ud_addr` found for struct `WorkRequestHandle<'g, G>` in the current scope
+ --> tests/post_send_guard/ud_address_requires_send.rs:8:59
+  |
+8 |         guard.construct_wr(1, WorkRequestFlags::Signaled).setup_ud_addr(ah, 1, 1);
+  |         -----                                             ^^^^^^^^^^^^^
+  |         |
+  |         method `setup_ud_addr` is available on `&mut G`
+  |
+help: there is a method `setup_read` with a similar name, but with different arguments
+ --> src/ibverbs/queue_pair.rs
+  |
+  |     pub fn setup_read(self, rkey: u32, remote_addr: u64) -> LocalBufferHandle<'g, G> {
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
