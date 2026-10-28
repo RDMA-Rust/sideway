@@ -2,13 +2,13 @@
 //! interface for RDMA communication.
 use bitmask_enum::bitmask;
 use rdma_mummy_sys::{
-    ibv_create_qp, ibv_create_qp_ex, ibv_data_buf, ibv_destroy_qp, ibv_modify_qp, ibv_post_recv, ibv_post_send, ibv_qp,
-    ibv_qp_attr, ibv_qp_attr_mask, ibv_qp_cap, ibv_qp_create_send_ops_flags, ibv_qp_ex, ibv_qp_init_attr,
-    ibv_qp_init_attr_ex, ibv_qp_init_attr_mask, ibv_qp_state, ibv_qp_to_qp_ex, ibv_qp_type, ibv_query_qp, ibv_recv_wr,
-    ibv_rx_hash_conf, ibv_send_flags, ibv_send_wr, ibv_sge, ibv_wr_abort, ibv_wr_atomic_cmp_swp,
-    ibv_wr_atomic_fetch_add, ibv_wr_complete, ibv_wr_opcode, ibv_wr_rdma_read, ibv_wr_rdma_write,
-    ibv_wr_rdma_write_imm, ibv_wr_send, ibv_wr_send_imm, ibv_wr_set_inline_data, ibv_wr_set_inline_data_list,
-    ibv_wr_set_sge, ibv_wr_set_sge_list, ibv_wr_start,
+    ibv_create_qp, ibv_create_qp_ex, ibv_data_buf, ibv_destroy_qp, ibv_modify_qp, ibv_post_recv, ibv_post_send,
+    ibv_post_srq_recv, ibv_qp, ibv_qp_attr, ibv_qp_attr_mask, ibv_qp_cap, ibv_qp_create_send_ops_flags, ibv_qp_ex,
+    ibv_qp_init_attr, ibv_qp_init_attr_ex, ibv_qp_init_attr_mask, ibv_qp_state, ibv_qp_to_qp_ex, ibv_qp_type,
+    ibv_query_qp, ibv_recv_wr, ibv_rx_hash_conf, ibv_send_flags, ibv_send_wr, ibv_sge, ibv_srq, ibv_wr_abort,
+    ibv_wr_atomic_cmp_swp, ibv_wr_atomic_fetch_add, ibv_wr_complete, ibv_wr_opcode, ibv_wr_rdma_read,
+    ibv_wr_rdma_write, ibv_wr_rdma_write_imm, ibv_wr_send, ibv_wr_send_imm, ibv_wr_set_inline_data,
+    ibv_wr_set_inline_data_list, ibv_wr_set_sge, ibv_wr_set_sge_list, ibv_wr_start,
 };
 use std::sync::{Arc, LazyLock};
 use std::{
@@ -24,6 +24,7 @@ use super::{
     completion::{CompletionQueue, GenericCompletionQueue},
     device_context::Mtu,
     protection_domain::ProtectionDomain,
+    shared_receive_queue::SharedReceiveQueue,
     AccessFlags,
 };
 
@@ -415,12 +416,7 @@ pub trait QueuePair {
     /// guard.post()?;
     /// ```
     fn start_post_recv(&mut self) -> PostRecvGuard<'_> {
-        PostRecvGuard {
-            qp: unsafe { self.qp() },
-            wrs: Vec::new(),
-            sges: Vec::new(),
-            _phantom: PhantomData,
-        }
+        PostRecvGuard::new(RecvTarget::QueuePair(unsafe { self.qp() }))
     }
 }
 
@@ -885,6 +881,7 @@ pub struct BasicQueuePair {
     _pd: Arc<ProtectionDomain>,
     _send_cq: GenericCompletionQueue,
     _recv_cq: GenericCompletionQueue,
+    _srq: Option<Arc<SharedReceiveQueue>>,
 }
 
 unsafe impl Send for BasicQueuePair {}
@@ -935,6 +932,7 @@ pub struct ExtendedQueuePair {
     _pd: Arc<ProtectionDomain>,
     _send_cq: GenericCompletionQueue,
     _recv_cq: GenericCompletionQueue,
+    _srq: Option<Arc<SharedReceiveQueue>>,
 }
 
 unsafe impl Send for ExtendedQueuePair {}
@@ -981,6 +979,7 @@ pub struct QueuePairBuilder {
     pd: Arc<ProtectionDomain>,
     send_cq: Option<GenericCompletionQueue>,
     recv_cq: Option<GenericCompletionQueue>,
+    srq: Option<Arc<SharedReceiveQueue>>,
 }
 
 impl QueuePairBuilder {
@@ -1023,6 +1022,7 @@ impl QueuePairBuilder {
             pd: Arc::clone(pd),
             send_cq: None,
             recv_cq: None,
+            srq: None,
         }
     }
 
@@ -1101,6 +1101,22 @@ impl QueuePairBuilder {
         self
     }
 
+    /// Setup the [`SharedReceiveQueue`] to be used by the QP instead of its own recv queue, receive
+    /// Work Requests should then be posted with [`SharedReceiveQueue::start_post_recv`], and
+    /// [`setup_max_recv_wr`] and [`setup_max_recv_sge`] are ignored. Completions of the received
+    /// messages are still reported to the QP's recv [`CompletionQueue`].
+    ///
+    /// [`setup_max_recv_wr`]: QueuePairBuilder::setup_max_recv_wr
+    /// [`setup_max_recv_sge`]: QueuePairBuilder::setup_max_recv_sge
+    ///
+    pub fn setup_shared_receive_queue(&mut self, srq: &Arc<SharedReceiveQueue>) -> &mut Self {
+        unsafe {
+            self.init_attr.srq = srq.srq().as_ptr();
+        }
+        self.srq = Some(Arc::clone(srq));
+        self
+    }
+
     /// Setup the operations could be used of a [`ExtendedQueuePair`].
     pub fn setup_send_ops_flags(&mut self, send_ops_flags: SendOperationFlags) -> &mut Self {
         self.init_attr.send_ops_flags = send_ops_flags.bits;
@@ -1130,7 +1146,7 @@ impl QueuePairBuilder {
                     qp_context: null_mut(),
                     send_cq: self.init_attr.send_cq,
                     recv_cq: self.init_attr.recv_cq,
-                    srq: null_mut(),
+                    srq: self.init_attr.srq,
                     cap: self.init_attr.cap,
                     qp_type: self.init_attr.qp_type,
                     sq_sig_all: 0,
@@ -1144,6 +1160,7 @@ impl QueuePairBuilder {
             _pd: Arc::clone(&self.pd),
             _send_cq: send_cq,
             _recv_cq: recv_cq,
+            _srq: self.srq.clone(),
         })
     }
 
@@ -1178,6 +1195,7 @@ impl QueuePairBuilder {
             _pd: Arc::clone(&self.pd),
             _send_cq: send_cq,
             _recv_cq: recv_cq,
+            _srq: self.srq.clone(),
         })
     }
 }
@@ -1963,15 +1981,31 @@ impl Drop for ExtendedPostSendGuard<'_> {
     }
 }
 
-/// A [`PostRecvGuard`] that can be used to construct and post recv RDMA Work Requests.
+/// The receive queue that a [`PostRecvGuard`] posts its Work Requests to.
+pub(crate) enum RecvTarget {
+    QueuePair(NonNull<ibv_qp>),
+    SharedReceiveQueue(NonNull<ibv_srq>),
+}
+
+/// A [`PostRecvGuard`] that can be used to construct and post recv RDMA Work Requests, to a
+/// [`QueuePair`] or to a [`SharedReceiveQueue`].
 pub struct PostRecvGuard<'qp> {
-    qp: NonNull<ibv_qp>,
+    target: RecvTarget,
     wrs: Vec<ibv_recv_wr>,
     sges: Vec<ibv_sge>,
     _phantom: PhantomData<&'qp ()>,
 }
 
 impl<'qp> PostRecvGuard<'qp> {
+    pub(crate) fn new(target: RecvTarget) -> Self {
+        PostRecvGuard {
+            target,
+            wrs: Vec::new(),
+            sges: Vec::new(),
+            _phantom: PhantomData,
+        }
+    }
+
     /// Construct a new [`RecvWorkRequestHandle`] for setting up a new RDMA Work Request, every
     /// [`QueuePair`] should hold only one [`RecvWorkRequestHandle`] at the same time.
     pub fn construct_wr<'g>(&'g mut self, wr_id: u64) -> RecvWorkRequestHandle<'g, 'qp> {
@@ -2009,7 +2043,14 @@ impl<'qp> PostRecvGuard<'qp> {
         }
 
         let mut bad_wr: *mut ibv_recv_wr = null_mut();
-        let ret = unsafe { ibv_post_recv(self.qp.as_ptr(), self.wrs.as_mut_ptr(), &mut bad_wr) };
+        let ret = unsafe {
+            match self.target {
+                RecvTarget::QueuePair(qp) => ibv_post_recv(qp.as_ptr(), self.wrs.as_mut_ptr(), &mut bad_wr),
+                RecvTarget::SharedReceiveQueue(srq) => {
+                    ibv_post_srq_recv(srq.as_ptr(), self.wrs.as_mut_ptr(), &mut bad_wr)
+                },
+            }
+        };
         match ret {
             0 => Ok(()),
             libc::EINVAL => Err(PostRecvError::InvalidWorkRequest(io::Error::from_raw_os_error(
