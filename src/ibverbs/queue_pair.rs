@@ -1718,6 +1718,11 @@ impl PostSendGuard for BasicPostSendGuard<'_> {
     /// [`ibv_post_send`]: https://man7.org/linux/man-pages/man3/ibv_post_send.3.html
     ///
     fn post(mut self) -> Result<(), PostSendError> {
+        // an empty Vec's pointer is dangling, not null, so providers would dereference it
+        if self.wrs.is_empty() {
+            return Ok(());
+        }
+
         let mut sge_index = 0;
 
         for i in 0..self.wrs.len() {
