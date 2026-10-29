@@ -2019,7 +2019,7 @@ impl<'qp> PostRecvGuard<'qp> {
     }
 
     /// Construct a new [`RecvWorkRequestHandle`] for setting up a new RDMA Work Request, every
-    /// [`QueuePair`] should hold only one [`RecvWorkRequestHandle`] at the same time.
+    /// [`PostRecvGuard`] should hold only one [`RecvWorkRequestHandle`] at the same time.
     pub fn construct_wr<'g>(&'g mut self, wr_id: u64) -> RecvWorkRequestHandle<'g, 'qp> {
         self.wrs.push(ibv_recv_wr {
             wr_id,
