@@ -9,7 +9,7 @@ use sideway::ibverbs::shared_receive_queue::SharedReceiveQueueAttribute;
 use sideway::ibverbs::{
     address::{AddressHandleAttribute, GidType},
     device::{self, DeviceInfo},
-    device_context::{DeviceContext, Mtu},
+    device_context::{DeviceCapabilityFlags, DeviceContext, Mtu},
     queue_pair::{
         PostSendGuard, QueuePair, QueuePairAttribute, QueuePairState, SetInlineData, SetScatterGatherEntry,
         WorkRequestFlags,
@@ -121,6 +121,38 @@ fn srq_attributes() -> Result<(), Box<dyn std::error::Error>> {
         attr.setup_srq_limit(4);
         srq.modify(&attr).unwrap();
         assert_eq!(srq.query().unwrap().srq_limit(), 4);
+    }
+
+    Ok(())
+}
+
+#[test]
+fn srq_resize() -> Result<(), Box<dyn std::error::Error>> {
+    let device_list = device::DeviceList::new()?;
+    for device in &device_list {
+        let ctx = device.open().unwrap();
+        if !supports_srq(&ctx) {
+            continue;
+        }
+        if !ctx
+            .query_device()
+            .unwrap()
+            .device_cap_flags()
+            .contains(DeviceCapabilityFlags::SharedReceiveQueueResize)
+        {
+            eprintln!("skipping {}: no SRQ resize support", ctx.name());
+            continue;
+        }
+        let pd = ctx.alloc_pd().unwrap();
+
+        let srq = pd.create_srq_builder().setup_max_wr(16).build().unwrap();
+        let max_wr = srq.query().unwrap().max_wr();
+        assert!(max_wr >= 16);
+
+        let mut attr = SharedReceiveQueueAttribute::new();
+        attr.setup_max_wr(max_wr * 4);
+        srq.modify(&attr).unwrap();
+        assert!(srq.query().unwrap().max_wr() >= max_wr * 4);
     }
 
     Ok(())
