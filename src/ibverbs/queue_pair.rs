@@ -111,7 +111,8 @@ pub enum PostSendError {
     NotEnoughResources(#[source] io::Error),
 }
 
-/// Error returned by [`PostRecvGuard::post`] for posting Work Requests to QP's recv queue.
+/// Error returned by [`PostRecvGuard::post`] for posting Work Requests to QP's recv queue or to a
+/// [`SharedReceiveQueue`].
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum PostRecvError {
@@ -119,7 +120,7 @@ pub enum PostRecvError {
     Ibverbs(#[from] io::Error),
     #[error("invalid value provided in work request")]
     InvalidWorkRequest(#[source] io::Error),
-    #[error("invalid value provided in queue pair")]
+    #[error("invalid value provided in queue pair or shared receive queue")]
     InvalidQueuePair(#[source] io::Error),
     #[error("receive queue is full or not enough resources to complete this operation")]
     NotEnoughResources(#[source] io::Error),
