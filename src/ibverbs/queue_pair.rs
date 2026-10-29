@@ -1981,6 +1981,11 @@ impl<'qp> PostRecvGuard<'qp> {
     }
 
     pub fn post(mut self) -> Result<(), PostRecvError> {
+        // an empty Vec's pointer is dangling, not null, so providers would dereference it
+        if self.wrs.is_empty() {
+            return Ok(());
+        }
+
         let mut sge_index = 0;
 
         for i in 0..self.wrs.len() {
