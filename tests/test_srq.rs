@@ -8,7 +8,7 @@ use sideway::ibverbs::queue_pair::GenericQueuePair;
 use sideway::ibverbs::shared_receive_queue::SharedReceiveQueueAttribute;
 use sideway::ibverbs::{
     address::{AddressHandleAttribute, GidType},
-    device,
+    device::{self, DeviceInfo},
     device_context::{DeviceContext, Mtu},
     queue_pair::{
         PostSendGuard, QueuePair, QueuePairAttribute, QueuePairState, SetInlineData, SetScatterGatherEntry,
@@ -68,11 +68,22 @@ fn connect(ctx: &DeviceContext, qp: &mut GenericQueuePair, dest_qp_num: u32) {
     assert_eq!(QueuePairState::ReadyToSend, qp.state());
 }
 
+fn supports_srq(ctx: &DeviceContext) -> bool {
+    let supported = ctx.query_device().unwrap().max_srq() > 0;
+    if !supported {
+        eprintln!("skipping {}: no SRQ support", ctx.name());
+    }
+    supported
+}
+
 #[test]
 fn srq_attributes() -> Result<(), Box<dyn std::error::Error>> {
     let device_list = device::DeviceList::new()?;
     for device in &device_list {
         let ctx = device.open().unwrap();
+        if !supports_srq(&ctx) {
+            continue;
+        }
         let pd = ctx.alloc_pd().unwrap();
 
         let srq = pd
@@ -124,6 +135,9 @@ fn srq_shared_by_two_qps(#[case] use_qp_ex: bool, #[case] use_cq_ex: bool) -> Re
     let device_list = device::DeviceList::new()?;
     for device in &device_list {
         let ctx = device.open().unwrap();
+        if !supports_srq(&ctx) {
+            continue;
+        }
         let pd = ctx.alloc_pd().unwrap();
 
         let mut recv_data: Vec<u8> = vec![0; 128];
