@@ -408,6 +408,10 @@ pub trait QueuePair {
     /// Starts a post receive operation, every [`QueuePair`] should hold only one [`PostRecvGuard`]
     /// at the same time.
     ///
+    /// A [`QueuePair`] built with [`QueuePairBuilder::setup_shared_receive_queue`] has no recv queue
+    /// of its own, posting to it fails, post to the [`SharedReceiveQueue`] instead with
+    /// [`SharedReceiveQueue::start_post_recv`].
+    ///
     /// # Example
     ///
     /// ```compile_fail
@@ -1105,6 +1109,13 @@ impl QueuePairBuilder {
     /// Work Requests should then be posted with [`SharedReceiveQueue::start_post_recv`], and
     /// [`setup_max_recv_wr`] and [`setup_max_recv_sge`] are ignored. Completions of the received
     /// messages are still reported to the QP's recv [`CompletionQueue`].
+    ///
+    /// Posting with [`QueuePair::start_post_recv`] on the built QPs fails, as they have no recv
+    /// queue of their own.
+    ///
+    /// When such a QP is moved to the error state, wait for the `IBV_EVENT_QP_LAST_WQE_REACHED`
+    /// asynchronous event before destroying it, otherwise completions of WRs it already took from
+    /// the SRQ may be lost.
     ///
     /// [`setup_max_recv_wr`]: QueuePairBuilder::setup_max_recv_wr
     /// [`setup_max_recv_sge`]: QueuePairBuilder::setup_max_recv_sge
