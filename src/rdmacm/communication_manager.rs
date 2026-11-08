@@ -864,15 +864,15 @@ impl Identifier {
     ) -> Result<(), ResolveAddressError> {
         let cm_id = self.cm_id;
         let timeout_ms: i32 = timeout.as_millis().try_into().unwrap();
+        // Keep both address buffers alive until rdma_resolve_addr has copied them.
+        let mut src_sockaddr = src_addr.map(OsSocketAddr::from);
+        let mut dst_sockaddr = OsSocketAddr::from(dst_addr);
 
         let ret = unsafe {
             rdma_resolve_addr(
                 cm_id.as_ptr(),
-                match src_addr {
-                    Some(addr) => OsSocketAddr::from(addr).as_mut_ptr(),
-                    None => null_mut(),
-                },
-                OsSocketAddr::from(dst_addr).as_mut_ptr(),
+                src_sockaddr.as_mut().map_or(null_mut(), OsSocketAddr::as_mut_ptr),
+                dst_sockaddr.as_mut_ptr(),
                 timeout_ms,
             )
         };
