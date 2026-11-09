@@ -51,12 +51,10 @@ jobs:
         uses: taiki-e/install-action@v2
         with:
           tool: just,cargo-nextest,cargo-llvm-cov
-      - name: Clone rxe kmod
+      - name: Load rxe kmod
         run: |
           uname -a
-          git clone https://github.com/pizhenwei/rxe.git
-          make -C rxe
-          sudo insmod ./rxe/rdma_rxe.ko
+          sudo modprobe rdma_rxe
           ip add
           sudo rdma link add rxe_eth0 type rxe netdev eth0
       - name: Build rdma-core
