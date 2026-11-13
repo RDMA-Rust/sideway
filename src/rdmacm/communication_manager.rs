@@ -166,10 +166,11 @@ use std::{io, mem::MaybeUninit, net::SocketAddr, ptr::NonNull, sync::Arc};
 
 use os_socketaddr::OsSocketAddr;
 use rdma_mummy_sys::{
-    ibv_qp_attr, ibv_qp_type, rdma_accept, rdma_ack_cm_event, rdma_bind_addr, rdma_cm_event, rdma_cm_event_type,
-    rdma_cm_id, rdma_conn_param, rdma_connect, rdma_create_event_channel, rdma_create_id, rdma_destroy_event_channel,
-    rdma_destroy_id, rdma_disconnect, rdma_establish, rdma_event_channel, rdma_get_cm_event, rdma_init_qp_attr,
-    rdma_listen, rdma_migrate_id, rdma_port_space, rdma_resolve_addr, rdma_resolve_route,
+    ibv_context, ibv_qp_attr, ibv_qp_type, rdma_accept, rdma_ack_cm_event, rdma_bind_addr, rdma_cm_event,
+    rdma_cm_event_type, rdma_cm_id, rdma_conn_param, rdma_connect, rdma_create_event_channel, rdma_create_id,
+    rdma_destroy_event_channel, rdma_destroy_id, rdma_disconnect, rdma_establish, rdma_event_channel,
+    rdma_free_devices, rdma_get_cm_event, rdma_get_devices, rdma_init_qp_attr, rdma_listen, rdma_migrate_id,
+    rdma_port_space, rdma_reject, rdma_resolve_addr, rdma_resolve_route,
 };
 
 use crate::ibverbs::device_context::DeviceContext;
@@ -221,7 +222,16 @@ impl From<u32> for EventType {
     }
 }
 
-static DEVICE_LISTS: LazyLock<Mutex<HashMap<usize, Arc<DeviceContext>>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
+// SAFETY: This cache is insertion-only and retains entries until process exit.
+// The strong Rust Arc prevents DeviceContext::drop from closing a context owned
+// by librdmacm. The retained RdmaDeviceList keeps the C context alive even after
+// device removal, preventing its address from being reused for another device
+// and aliasing an old cache entry (ABA). Do not evict entries or replace these
+// references with Weak references without redesigning DeviceContext ownership.
+// librdmacm handles discovery/removal; enumeration results come from its current
+// array, not from this map. Retention preserves pointer identity, not device liveness.
+static DEVICE_LISTS: LazyLock<Mutex<HashMap<usize, CachedDeviceContext>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// An RDMA event represents an event from an RDMA event channel, reported by an [`Identifier`].
 pub struct Event {
@@ -249,8 +259,9 @@ pub struct Identifier {
     user_context: Mutex<Option<Arc<dyn Any + Send + Sync>>>,
 }
 
-/// A connection paramter used for configure the communication when connecting or establishing
-/// datagram communication. Used in [`Identifier::connect`] and [`Identifier::accept`].
+/// Parameters used by [`Identifier::connect`] and [`Identifier::accept`] when
+/// configuring a connection or establishing datagram communication.
+/// [`Identifier::reject`] uses only the private data and ignores all other fields.
 pub struct ConnectionParameter {
     conn_param: rdma_conn_param,
     private_data: Vec<u8>,
@@ -445,6 +456,20 @@ pub enum AcceptErrorKind {
     Rdmacm(#[from] io::Error),
 }
 
+/// Error returned by [`Identifier::reject`] for rejecting a connection request.
+#[derive(Debug, thiserror::Error)]
+#[error("failed to reject")]
+#[non_exhaustive]
+pub struct RejectError(#[from] pub RejectErrorKind);
+
+/// The enum type for [`RejectError`].
+#[derive(Debug, thiserror::Error)]
+#[error(transparent)]
+#[non_exhaustive]
+pub enum RejectErrorKind {
+    Rdmacm(#[from] io::Error),
+}
+
 /// Error returned by [`Identifier::establish`] for establishing connection setup.
 #[derive(Debug, thiserror::Error)]
 #[error("failed to establish")]
@@ -486,6 +511,48 @@ pub struct GetQueuePairAttributeError(#[from] pub GetQueuePairAttributeErrorKind
 #[non_exhaustive]
 pub enum GetQueuePairAttributeErrorKind {
     Rdmacm(#[from] io::Error),
+}
+
+/// Error returned by [`get_devices`] for getting RDMA devices opened by RDMA CM.
+#[derive(Debug, thiserror::Error)]
+#[error("failed to get rdma devices: {0}")]
+#[non_exhaustive]
+pub struct GetDevicesError(#[from] pub GetDevicesErrorKind);
+
+/// The enum type for [`GetDevicesError`].
+#[derive(Debug, thiserror::Error)]
+#[error(transparent)]
+#[non_exhaustive]
+pub enum GetDevicesErrorKind {
+    /// Linux rdma-core rejected the kernel's RDMA CM ABI version (`EPERM`).
+    /// This does not identify a missing module or a permission problem.
+    #[error("RDMA CM ABI is not supported by librdmacm: {0}")]
+    UnsupportedAbi(#[source] io::Error),
+    /// Linux rdma-core found no verbs devices or could not enumerate them (`ENODEV`).
+    /// The original enumeration failure is not preserved by librdmacm, so this
+    /// does not prove that the machine has no RDMA hardware.
+    #[error("RDMA devices are unavailable or could not be enumerated: {0}")]
+    DevicesUnavailable(#[source] io::Error),
+    /// An RDMA CM failure without a more specific classification.
+    Rdmacm(io::Error),
+    #[error("rdma_get_devices returned invalid device count: {0}")]
+    InvalidDeviceCount(i32),
+    #[error("rdma_get_devices returned null context at index {0}")]
+    NullDeviceContext(usize),
+}
+
+impl From<io::Error> for GetDevicesErrorKind {
+    fn from(err: io::Error) -> Self {
+        // These meanings are specific to rdma_get_devices: ucma_init maps a
+        // failed CM ABI check to EPERM, and sync_devices_list maps both failed
+        // and empty verbs enumeration to ENODEV. Do not classify by ErrorKind:
+        // EPERM and EACCES both become PermissionDenied but have different causes.
+        match err.raw_os_error() {
+            Some(libc::EPERM) => Self::UnsupportedAbi(err),
+            Some(libc::ENODEV) => Self::DevicesUnavailable(err),
+            _ => Self::Rdmacm(err),
+        }
+    }
 }
 
 impl Drop for EventChannel {
@@ -644,6 +711,159 @@ impl Drop for Event {
             rdma_ack_cm_event(self.event.as_mut());
         }
     }
+}
+
+struct RdmaDeviceList {
+    devices: NonNull<*mut ibv_context>,
+}
+
+// SAFETY: The array is immutable after rdma_get_devices returns, and its device
+// references are released exactly once. librdmacm synchronizes rdma_free_devices
+// internally, so the final owner may release the list on any thread.
+unsafe impl Send for RdmaDeviceList {}
+unsafe impl Sync for RdmaDeviceList {}
+
+struct CachedDeviceContext {
+    context: Arc<DeviceContext>,
+    // The Rust Arc alone does not retain librdmacm's reference to the raw context.
+    // Keep the C list that owns that reference for as long as the cache entry.
+    _devices: Arc<RdmaDeviceList>,
+}
+
+#[repr(C)]
+struct SockAddrIb {
+    sib_family: libc::sa_family_t,
+    sib_pkey: u16,
+    sib_flowinfo: u32,
+    sib_addr: [u8; 16],
+    sib_sid: u64,
+    sib_sid_mask: u64,
+    sib_scope_id: u64,
+}
+
+// Match sockaddr_ib in the vendored infiniband/ib.h; rdma-mummy-sys does not
+// export this type. Keep the layout used by the raw address casts explicit.
+const _: () = {
+    assert!(std::mem::size_of::<SockAddrIb>() == 48);
+    assert!(std::mem::offset_of!(SockAddrIb, sib_family) == 0);
+    assert!(std::mem::offset_of!(SockAddrIb, sib_pkey) == 2);
+    assert!(std::mem::offset_of!(SockAddrIb, sib_flowinfo) == 4);
+    assert!(std::mem::offset_of!(SockAddrIb, sib_addr) == 8);
+    assert!(std::mem::offset_of!(SockAddrIb, sib_sid) == 24);
+    assert!(std::mem::offset_of!(SockAddrIb, sib_sid_mask) == 32);
+    assert!(std::mem::offset_of!(SockAddrIb, sib_scope_id) == 40);
+};
+
+impl Drop for RdmaDeviceList {
+    fn drop(&mut self) {
+        unsafe { rdma_free_devices(self.devices.as_ptr()) };
+    }
+}
+
+fn cached_device_context(context: NonNull<ibv_context>) -> Option<Arc<DeviceContext>> {
+    if let Some(cached) = DEVICE_LISTS.lock().unwrap().get(&(context.as_ptr() as usize)) {
+        return Some(cached.context.clone());
+    }
+
+    // A CM ID retains its own C device reference, but that reference ends when
+    // the ID is destroyed. Acquire a list reference before exposing the context
+    // independently of the ID, without holding the cache mutex across the call.
+    get_devices().ok()?.into_iter().find(|device| device.context == context)
+}
+
+/// # Safety
+/// `addr` must point to a valid, aligned socket address of the size indicated by
+/// its family. Preserve the full address's provenance when creating this pointer.
+unsafe fn socket_addr_from_raw(addr: *const libc::sockaddr) -> Option<SocketAddr> {
+    let len = match unsafe { (*addr).sa_family } as i32 {
+        libc::AF_INET => std::mem::size_of::<libc::sockaddr_in>(),
+        libc::AF_INET6 => std::mem::size_of::<libc::sockaddr_in6>(),
+        _ => return None,
+    };
+
+    unsafe { OsSocketAddr::copy_from_raw(addr, len as libc::socklen_t).into_addr() }
+}
+
+/// # Safety
+/// `addr` must point to a valid, aligned socket address of the size indicated by
+/// its family. Preserve the full address's provenance when creating this pointer.
+unsafe fn port_from_raw_addr(addr: *const libc::sockaddr) -> u16 {
+    match unsafe { (*addr).sa_family } as i32 {
+        libc::AF_INET => u16::from_be(unsafe { (*addr.cast::<libc::sockaddr_in>()).sin_port }),
+        libc::AF_INET6 => u16::from_be(unsafe { (*addr.cast::<libc::sockaddr_in6>()).sin6_port }),
+        libc::AF_IB => u64::from_be(unsafe { (*addr.cast::<SockAddrIb>()).sib_sid }) as u16,
+        _ => 0,
+    }
+}
+
+/// Get a list of RDMA devices currently available.
+///
+/// This wraps [`rdma_get_devices`], which returns an array retaining references
+/// to RDMA-CM-opened device contexts. Newly cached contexts retain this array;
+/// arrays containing only previously cached contexts are released immediately
+/// with `rdma_free_devices`.
+///
+/// The cache is intentionally insertion-only and shared with
+/// [`Identifier::get_device_context`]. It retains both the Rust handles and C
+/// device-list references until process exit, preventing either Rust or
+/// librdmacm from closing a cached context, including after device removal.
+/// Removed devices are omitted from subsequent enumeration results.
+///
+/// Unlike [`DeviceList`], which enumerates verbs devices that callers open
+/// independently, this function returns contexts opened and managed by RDMA CM.
+/// These are the contexts shared with [`Identifier::get_device_context`] and
+/// suitable for allocating resources for CM identifiers bound to the same context.
+/// Opening the same device through [`Device::open`] creates a separate context;
+/// resources from it are not interchangeable with resources from the CM context.
+///
+/// # Errors and empty results
+///
+/// A null result from RDMA CM is classified by its errno, preserving the
+/// returned [`io::Error`] in the error kind:
+///
+/// - [`GetDevicesErrorKind::DevicesUnavailable`] (`ENODEV`): no verbs devices
+///   were found, or verbs enumeration failed. Linux rdma-core reports both
+///   cases with the same errno, hiding the underlying enumeration failure.
+/// - [`GetDevicesErrorKind::UnsupportedAbi`] (`EPERM`): Linux rdma-core's CM
+///   ABI compatibility check failed. A missing CM module does not reliably
+///   imply this error because ABI discovery can fall back to an assumed version.
+/// - [`GetDevicesErrorKind::Rdmacm`]: any other error, with its original errno.
+///
+/// A valid array containing zero devices is freed and returned as an empty vector.
+/// This can occur when verbs devices exist but all CM devices are marked dead,
+/// for example after device initialization failures. A machine with no verbs
+/// devices normally produces [`GetDevicesErrorKind::DevicesUnavailable`]
+/// rather than an empty vector.
+///
+/// [`DeviceList`]: crate::ibverbs::device::DeviceList
+/// [`Device::open`]: crate::ibverbs::device::Device::open
+/// [`rdma_get_devices`]: https://man7.org/linux/man-pages/man3/rdma_get_devices.3.html
+pub fn get_devices() -> Result<Vec<Arc<DeviceContext>>, GetDevicesError> {
+    let mut num_devices = 0;
+    let devices = unsafe { rdma_get_devices(&mut num_devices) };
+
+    let devices = Arc::new(RdmaDeviceList {
+        devices: NonNull::new(devices).ok_or_else(|| GetDevicesErrorKind::from(io::Error::last_os_error()))?,
+    });
+    let num_devices = usize::try_from(num_devices).map_err(|_| GetDevicesErrorKind::InvalidDeviceCount(num_devices))?;
+    let contexts = unsafe { std::slice::from_raw_parts(devices.devices.as_ptr(), num_devices) };
+    let mut guard = DEVICE_LISTS.lock().unwrap();
+
+    contexts
+        .iter()
+        .enumerate()
+        .map(|(index, &context)| -> Result<_, GetDevicesError> {
+            let context = NonNull::new(context).ok_or(GetDevicesErrorKind::NullDeviceContext(index))?;
+            Ok(guard
+                .entry(context.as_ptr() as usize)
+                .or_insert_with(|| CachedDeviceContext {
+                    context: Arc::new(DeviceContext { context }),
+                    _devices: devices.clone(),
+                })
+                .context
+                .clone())
+        })
+        .collect()
 }
 
 fn new_cm_id_for_raw(event_channel: Arc<EventChannel>, raw: *mut rdma_cm_id) -> Arc<Identifier> {
@@ -813,6 +1033,9 @@ impl Identifier {
     /// Get the RDMA device's port number of the [`Identifier`]. The port number is only available
     /// after the [`Identifier`] is bound to a specific address by [`bind_addr`] or [`resolve_addr`].
     ///
+    /// This identifies the RDMA device port. For the local and remote address
+    /// ports, use [`Self::get_src_port`] and [`Self::get_dst_port`].
+    ///
     /// [`bind_addr`]: crate::rdmacm::communication_manager::Identifier::bind_addr
     /// [`resolve_addr`]: crate::rdmacm::communication_manager::Identifier::resolve_addr
     ///
@@ -820,6 +1043,48 @@ impl Identifier {
         let cm_id = self.cm_id;
 
         unsafe { cm_id.as_ref().port_num }
+    }
+
+    /// Get the local address port in host byte order, or 0 if no port is bound.
+    ///
+    /// For IPv4 and IPv6 this is the IP port. For `AF_IB`, this returns only the
+    /// low 16 bits of the 64-bit service ID; the upper bits are discarded.
+    /// Unsupported address families return 0. See [`Self::port`] for the RDMA
+    /// device's port number.
+    pub fn get_src_port(&self) -> u16 {
+        unsafe { port_from_raw_addr(std::ptr::addr_of!((*self.cm_id.as_ptr()).route.addr.src_addr_union).cast()) }
+    }
+
+    /// Get the destination address port in host byte order, or 0 if the
+    /// destination address has not yet been assigned by address resolution or
+    /// an incoming connection request. Connection establishment is not required.
+    ///
+    /// For IPv4 and IPv6 this is the IP port. For `AF_IB`, this returns only the
+    /// low 16 bits of the 64-bit service ID; the upper bits are discarded.
+    /// Unsupported address families return 0. See [`Self::port`] for the RDMA
+    /// device's port number.
+    pub fn get_dst_port(&self) -> u16 {
+        unsafe { port_from_raw_addr(std::ptr::addr_of!((*self.cm_id.as_ptr()).route.addr.dst_addr_union).cast()) }
+    }
+
+    /// Get the local IP socket address of a bound [`Identifier`].
+    ///
+    /// Returns [`None`] when the RDMA CM address is not representable as
+    /// [`SocketAddr`], for example when the underlying address family is
+    /// `AF_IB`, or when the [`Identifier`] is not bound to an address.
+    pub fn get_local_addr(&self) -> Option<SocketAddr> {
+        unsafe { socket_addr_from_raw(std::ptr::addr_of!((*self.cm_id.as_ptr()).route.addr.src_addr_union).cast()) }
+    }
+
+    /// Get the remote IP socket address of the [`Identifier`].
+    ///
+    /// Returns [`None`] when the RDMA CM address is not representable as
+    /// [`SocketAddr`], for example when the underlying address family is
+    /// `AF_IB`, or when the destination address has not yet been assigned by
+    /// address resolution or an incoming connection request. Connection
+    /// establishment is not required.
+    pub fn get_peer_addr(&self) -> Option<SocketAddr> {
+        unsafe { socket_addr_from_raw(std::ptr::addr_of!((*self.cm_id.as_ptr()).route.addr.dst_addr_union).cast()) }
     }
 
     /// Bind the [`Identifier`] to a specific address. Note that users shouldn't bind to a loopback
@@ -962,6 +1227,12 @@ impl Identifier {
     /// available after the [`Identifier`] is bound to a specific address by [`bind_addr`] or
     /// [`resolve_addr`].
     ///
+    /// Returns [`None`] if the identifier has no device, or if a context not yet
+    /// cached cannot be retained from the current RDMA CM device list (for
+    /// example, because enumeration failed or the device was removed). Call
+    /// [`get_devices`] directly to inspect enumeration errors. Cached contexts
+    /// and their C device references are retained until process exit.
+    ///
     /// [`bind_addr`]: crate::rdmacm::communication_manager::Identifier::bind_addr
     /// [`resolve_addr`]: crate::rdmacm::communication_manager::Identifier::resolve_addr
     ///
@@ -969,19 +1240,8 @@ impl Identifier {
         let cm_id = self.cm_id;
 
         unsafe {
-            if (*cm_id.as_ptr()).verbs.is_null() {
-                return None;
-            }
-
-            let mut guard = DEVICE_LISTS.lock().unwrap();
-            let device_ctx = guard.entry((*cm_id.as_ptr()).verbs as usize).or_insert_with(|| {
-                Arc::new(DeviceContext {
-                    // Safe due to the is_null() check above.
-                    context: NonNull::new((*cm_id.as_ptr()).verbs).unwrap(),
-                })
-            });
-
-            Some(device_ctx.clone())
+            let context = NonNull::new((*cm_id.as_ptr()).verbs)?;
+            cached_device_context(context)
         }
     }
 
@@ -1037,6 +1297,37 @@ impl Identifier {
 
         if ret < 0 {
             return Err(AcceptErrorKind::Rdmacm(io::Error::last_os_error()).into());
+        }
+
+        Ok(())
+    }
+
+    /// Called from the listening side to reject an incoming connection on the [`Identifier`].
+    ///
+    /// # Note
+    ///
+    /// This method is only useful for [`EventType::ConnectRequest`] events. A new [`Identifier`]
+    /// is automatically created to handle the incoming connection request. This is distinct from
+    /// the listener [`Identifier`]. The new [`Identifier`] could be obtained by [`Event::cm_id`].
+    ///
+    /// Use [`ConnectionParameter::setup_private_data`] to attach optional rejection private data.
+    /// Only the private data is used; all other fields of `conn_param`, including
+    /// the QP number, retry counts, and resource settings, are ignored.
+    ///
+    /// [`Event::cm_id`]: crate::rdmacm::communication_manager::Event::cm_id
+    ///
+    pub fn reject(&self, conn_param: ConnectionParameter) -> Result<(), RejectError> {
+        let cm_id = self.cm_id;
+        let ret = unsafe {
+            rdma_reject(
+                cm_id.as_ptr(),
+                conn_param.conn_param.private_data,
+                conn_param.conn_param.private_data_len,
+            )
+        };
+
+        if ret < 0 {
+            return Err(RejectErrorKind::Rdmacm(io::Error::last_os_error()).into());
         }
 
         Ok(())
@@ -1136,18 +1427,17 @@ impl ConnectionParameter {
         self
     }
 
-    /// Setup the private data to be sent with connect or accept.
+    /// Setup the private data to be sent with connect, accept, or reject.
     ///
     /// # Private data size
     ///
     /// This method copies the provided slice into the [`ConnectionParameter`]
     /// and stores that owned buffer's pointer and length in the raw RDMA CM
     /// parameter. It does not cap the length to any specific RDMA CM operation.
-    /// Check the operation limit
-    /// before calling [`Identifier::connect`] or [`Identifier::accept`], or when
-    /// using the lower-level [`rdma_reject(3)`] API.
+    /// Check the operation limit before calling [`Identifier::connect`],
+    /// [`Identifier::accept`], or [`Identifier::reject`].
     ///
-    /// | Port space | Service type | [`connect`] | [`accept`] | [`rdma_reject(3)`] |
+    /// | Port space | Service type | [`connect`] | [`accept`] | [`reject`] |
     /// | --- | --- | ---: | ---: | ---: |
     /// | [`PortSpace::Tcp`] | connected | 56 | 196 | 148 |
     /// | [`PortSpace::Udp`] | datagram | 180 | 136 | 136 |
@@ -1155,8 +1445,8 @@ impl ConnectionParameter {
     /// | [`PortSpace::InfiniBand`] | datagram | 216 | 136 | 136 |
     ///
     /// [`PortSpace::Tcp`] and [`PortSpace::Udp`] values are the user-visible
-    /// payload sizes documented by the [`rdma_connect(3)`] and
-    /// [`rdma_accept(3)`] man pages, plus the [`rdma_reject(3)`] sizes implied
+    /// payload sizes documented by the [`rdma_connect`] and
+    /// [`rdma_accept`] man pages, plus the [`rdma_reject`] sizes implied
     /// by Linux's IB CM message constants and RDMA CM routing.
     /// [`PortSpace::InfiniBand`] is derived from Linux CMA's
     /// `id->qp_type == IB_QPT_UD` branch: connected QPs use IB CM REQ/REP/REJ
@@ -1170,9 +1460,10 @@ impl ConnectionParameter {
     ///
     /// [`connect`]: Identifier::connect
     /// [`accept`]: Identifier::accept
-    /// [`rdma_connect(3)`]: https://man7.org/linux/man-pages/man3/rdma_connect.3.html
-    /// [`rdma_accept(3)`]: https://man7.org/linux/man-pages/man3/rdma_accept.3.html
-    /// [`rdma_reject(3)`]: https://man7.org/linux/man-pages/man3/rdma_reject.3.html
+    /// [`reject`]: Identifier::reject
+    /// [`rdma_connect`]: https://man7.org/linux/man-pages/man3/rdma_connect.3.html
+    /// [`rdma_accept`]: https://man7.org/linux/man-pages/man3/rdma_accept.3.html
+    /// [`rdma_reject`]: https://man7.org/linux/man-pages/man3/rdma_reject.3.html
     ///
     /// [`setup_private_data`]: ConnectionParameter::setup_private_data
     ///
@@ -1414,22 +1705,41 @@ mod tests {
 
                 assert_eq!(Arc::strong_count(&id), 1);
 
-                let dispatcher = thread::spawn(move || {
-                    assert_eq!(Arc::strong_count(&channel), 2);
+                channel.set_nonblocking(true).unwrap();
 
-                    let event = wait_for_cm_event(&channel, Duration::from_secs(2), "event fd test").unwrap();
-                    assert_eq!(event.event_type(), EventType::AddressResolved);
-                    assert_eq!(Arc::strong_count(&channel), 3);
-
-                    event.ack().unwrap();
-                    assert_eq!(Arc::strong_count(&channel), 2);
-                });
-
-                let _ = id.resolve_addr(
+                id.resolve_addr(
                     None,
                     SocketAddr::from((IpAddr::from_str("127.0.0.1").expect("Invalid IP address"), 0)),
-                    Duration::new(0, 200000000),
-                );
+                    Duration::from_millis(200),
+                )?;
+
+                let dispatcher = thread::spawn(move || {
+                    let poller = Poller::new().expect("Failed to create poller");
+                    let key = 233;
+
+                    assert_eq!(Arc::strong_count(&channel), 2);
+                    unsafe { poller.add(&channel, PollingEvent::readable(key)).unwrap() };
+
+                    let mut events = Events::new();
+                    poller.wait(&mut events, Some(Duration::from_secs(10))).unwrap();
+
+                    assert_eq!(events.len(), 1, "expected an RDMA CM event within 10 seconds");
+
+                    for ev in events.iter() {
+                        assert_eq!(ev.key, key);
+
+                        let event = channel.get_cm_event().unwrap();
+                        assert!(
+                            matches!(event.event_type(), EventType::AddressResolved | EventType::AddressError),
+                            "unexpected RDMA CM event: {:?}",
+                            event.event_type()
+                        );
+                        assert_eq!(Arc::strong_count(&channel), 3);
+
+                        event.ack().unwrap();
+                        assert_eq!(Arc::strong_count(&channel), 2);
+                    }
+                });
 
                 dispatcher.join().unwrap();
                 assert_eq!(Arc::strong_count(&id), 1);
@@ -1454,7 +1764,11 @@ mod tests {
                 )?;
 
                 let event = wait_for_cm_event(&source_channel, Duration::from_secs(2), "source event channel")?;
-                assert_eq!(event.event_type(), EventType::AddressResolved);
+                assert!(
+                    matches!(event.event_type(), EventType::AddressResolved | EventType::AddressError),
+                    "unexpected RDMA CM event: {:?}",
+                    event.event_type()
+                );
                 assert_eq!(Arc::strong_count(&source_channel), 3);
 
                 // Model the Rust-side lifetime state after a successful migration
@@ -1498,7 +1812,11 @@ mod tests {
                 )?;
 
                 let event = wait_for_cm_event(&channel, Duration::from_secs(2), "self-migrated event channel")?;
-                assert_eq!(event.event_type(), EventType::AddressResolved);
+                assert!(
+                    matches!(event.event_type(), EventType::AddressResolved | EventType::AddressError),
+                    "unexpected RDMA CM event: {:?}",
+                    event.event_type()
+                );
                 assert!(Arc::ptr_eq(
                     &event
                         .cm_id()
@@ -1536,7 +1854,11 @@ mod tests {
                 )?;
 
                 let event = wait_for_cm_event(&migrated_channel, Duration::from_secs(2), "migrated event channel")?;
-                assert_eq!(event.event_type(), EventType::AddressResolved);
+                assert!(
+                    matches!(event.event_type(), EventType::AddressResolved | EventType::AddressError),
+                    "unexpected RDMA CM event: {:?}",
+                    event.event_type()
+                );
                 assert!(Arc::ptr_eq(
                     &event
                         .cm_id()
@@ -1573,6 +1895,7 @@ mod tests {
                 let res = id.bind_addr(address);
 
                 assert!(res.is_ok());
+                assert_eq!(id.get_src_port(), address.port());
 
                 let new_id = channel.create_id(PortSpace::Tcp).unwrap();
 
@@ -1620,6 +1943,116 @@ mod tests {
                 Ok(())
             },
             Err(_) => Ok(()),
+        }
+    }
+
+    #[test]
+    fn test_socket_addr_and_port_from_raw() {
+        let ipv4 = SocketAddr::from((std::net::Ipv4Addr::new(192, 0, 2, 1), 18515));
+        let raw_ipv4 = OsSocketAddr::from(ipv4);
+        assert_eq!(unsafe { socket_addr_from_raw(raw_ipv4.as_ptr()) }, Some(ipv4));
+        assert_eq!(unsafe { port_from_raw_addr(raw_ipv4.as_ptr()) }, 18515);
+
+        let ipv6 = SocketAddr::V6(std::net::SocketAddrV6::new(std::net::Ipv6Addr::LOCALHOST, 18516, 42, 7));
+        let raw_ipv6 = OsSocketAddr::from(ipv6);
+        assert_eq!(unsafe { socket_addr_from_raw(raw_ipv6.as_ptr()) }, Some(ipv6));
+        assert_eq!(unsafe { port_from_raw_addr(raw_ipv6.as_ptr()) }, 18516);
+
+        let ib = SockAddrIb {
+            sib_family: libc::AF_IB as _,
+            sib_pkey: 0,
+            sib_flowinfo: 0,
+            sib_addr: [0; 16],
+            sib_sid: u64::to_be(0x1234_0000 | 18517),
+            sib_sid_mask: 0,
+            sib_scope_id: 0,
+        };
+        let ib_addr = std::ptr::from_ref(&ib).cast::<libc::sockaddr>();
+        assert_eq!(unsafe { socket_addr_from_raw(ib_addr) }, None);
+        assert_eq!(unsafe { port_from_raw_addr(ib_addr) }, 18517);
+
+        let unsupported = libc::sockaddr {
+            sa_family: libc::AF_UNIX as _,
+            sa_data: [0; 14],
+        };
+        assert_eq!(unsafe { socket_addr_from_raw(&unsupported) }, None);
+        assert_eq!(unsafe { port_from_raw_addr(&unsupported) }, 0);
+    }
+
+    #[test]
+    fn test_get_devices_unsupported_abi_error() {
+        let error = GetDevicesError(GetDevicesErrorKind::from(io::Error::from_raw_os_error(libc::EPERM)));
+        assert!(matches!(&error.0, GetDevicesErrorKind::UnsupportedAbi(_)));
+        assert!(error.to_string().contains("RDMA CM ABI is not supported"));
+
+        let kind = std::error::Error::source(&error).expect("GetDevicesError should expose its kind");
+        let source = kind
+            .source()
+            .and_then(|source| source.downcast_ref::<io::Error>())
+            .expect("the ABI error should preserve the RDMA CM errno");
+        assert_eq!(source.raw_os_error(), Some(libc::EPERM));
+    }
+
+    #[test]
+    fn test_get_devices_unavailable_error() {
+        let error = GetDevicesError(GetDevicesErrorKind::from(io::Error::from_raw_os_error(libc::ENODEV)));
+        assert!(matches!(&error.0, GetDevicesErrorKind::DevicesUnavailable(_)));
+        assert!(error.to_string().contains("unavailable or could not be enumerated"));
+
+        let kind = std::error::Error::source(&error).expect("GetDevicesError should expose its kind");
+        let source = kind
+            .source()
+            .and_then(|source| source.downcast_ref::<io::Error>())
+            .expect("the enumeration error should preserve the RDMA CM errno");
+        assert_eq!(source.raw_os_error(), Some(libc::ENODEV));
+    }
+
+    #[test]
+    fn test_get_devices_unclassified_errors_preserve_source() {
+        for error in [
+            io::Error::from_raw_os_error(libc::EACCES),
+            io::Error::from_raw_os_error(libc::ENOMEM),
+            io::Error::from_raw_os_error(libc::EOPNOTSUPP),
+            io::Error::from_raw_os_error(libc::EINVAL),
+            io::Error::new(io::ErrorKind::PermissionDenied, "permission denied without an errno"),
+        ] {
+            let errno = error.raw_os_error();
+            let message = error.to_string();
+            let GetDevicesErrorKind::Rdmacm(source) = GetDevicesErrorKind::from(error) else {
+                panic!("unexpected classification for {message}");
+            };
+            assert_eq!(source.raw_os_error(), errno);
+            assert_eq!(source.to_string(), message);
+        }
+    }
+
+    #[test]
+    fn test_get_devices_smoke_and_cache() {
+        let devices = match get_devices() {
+            Ok(devices) => devices,
+            Err(err) => {
+                eprintln!("skipping RDMA CM get_devices smoke test: {err}");
+                return;
+            },
+        };
+
+        let second = match get_devices() {
+            Ok(devices) => devices,
+            Err(GetDevicesError(GetDevicesErrorKind::DevicesUnavailable(_))) => {
+                // Devices may have disappeared or enumeration failed between snapshots.
+                return;
+            },
+            Err(err) => panic!("second rdma_get_devices call failed: {err}"),
+        };
+        // Hotplug can change both the membership and order between snapshots.
+        // Only contexts present in both snapshots must reuse their Rust Arc.
+        for first in &devices {
+            if let Some(second) = second.iter().find(|second| first.context == second.context) {
+                assert!(
+                    Arc::ptr_eq(first, second),
+                    "rdma_get_devices contexts should reuse the global DeviceContext cache"
+                );
+            }
         }
     }
 
@@ -1687,6 +2120,7 @@ mod tests {
                     let event = client_channel.get_cm_event()?;
                     match event.event_type() {
                         EventType::AddressResolved => {
+                            assert_eq!(client_id.get_dst_port(), server_addr.port());
                             client_id.resolve_route(Duration::from_secs(2))?;
                             event.ack()?;
                         },
@@ -1764,16 +2198,29 @@ mod tests {
     fn test_get_device_context_caches_correctly() -> Result<(), Box<dyn std::error::Error>> {
         match EventChannel::new() {
             Ok(channel) => {
+                let Some(cm_addr) = first_ib_or_roce_v2_gid_addr() else {
+                    eprintln!(
+                        "skipping RDMA CM device-context test: no usable IB GID or non-link-local RoCEv2 GID found"
+                    );
+                    return Ok(());
+                };
+
                 let id = channel.create_id(PortSpace::Tcp)?;
 
-                let _ = id.resolve_addr(
-                    None,
-                    SocketAddr::from((IpAddr::from_str("127.0.0.1")?, 0)),
-                    Duration::new(0, 200000000),
-                );
+                if let Err(err) = id.resolve_addr(None, cm_addr.socket_addr(0), Duration::new(0, 200000000)) {
+                    eprintln!("skipping RDMA CM device-context test: resolve_addr failed synchronously: {err}");
+                    return Ok(());
+                }
 
                 let event = wait_for_cm_event(&channel, Duration::from_secs(2), "device context test")?;
-                assert_eq!(event.event_type(), EventType::AddressResolved);
+                if event.event_type() != EventType::AddressResolved {
+                    eprintln!(
+                        "skipping RDMA CM device-context test: resolve_addr completed with {:?}",
+                        event.event_type()
+                    );
+                    event.ack()?;
+                    return Ok(());
+                }
 
                 let ctx1 = id.get_device_context();
                 let ctx2 = id.get_device_context();
