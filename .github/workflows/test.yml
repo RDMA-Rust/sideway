@@ -57,6 +57,7 @@ jobs:
           sudo modprobe rdma_rxe
           ip add
           sudo rdma link add rxe_eth0 type rxe netdev eth0
+          rdma link show
       - name: Build rdma-core
         run: |
           sudo apt update
@@ -67,10 +68,13 @@ jobs:
         run: |
           rm ./rdma-core/build/etc/libibverbs.d/mana.driver
           export LD_LIBRARY_PATH=./rdma-core/build/lib
+          # the runner's NIC (mlx5 or MANA) has no RoCE, and would claim eth0's address in
+          # RDMA CM; unload it here, as its VF may attach after the rxe setup
+          for m in mlx5_ib mana_ib; do
+            if lsmod | grep -q "^$m "; then sudo rmmod $m; fi
+          done
+          rdma link show
           cargo llvm-cov --no-report run --example ibv_devinfo
-          if modinfo mlx5_ib >/dev/null 2>&1 && lsmod | grep -q '^mlx5_ib'; then
-            sudo rmmod mlx5_ib
-          fi
           just test-basic-with-cov
           just test-rc-pingpong-with-cov
           just test-cmtime-with-cov
