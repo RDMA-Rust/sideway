@@ -596,6 +596,58 @@ impl Event {
         }
     }
 
+    /// Get the most RDMA read and atomic operations the remote peer may have outstanding towards
+    /// the local side, as negotiated so far.
+    ///
+    /// On an [`EventType::ConnectRequest`] this is the initiator depth the peer asked for, the
+    /// most the responder resources passed to [`accept`] may be. On an
+    /// [`EventType::ConnectResponse`] it is what the peer accepted. RDMA CM reports the values
+    /// from the local side's point of view, so this is the peer's initiator depth.
+    ///
+    /// # Returns
+    /// [`None`] for other events and for datagram (UD) identifiers.
+    ///
+    /// [`accept`]: crate::rdmacm::communication_manager::Identifier::accept
+    pub fn responder_resources(&self) -> Option<u8> {
+        self.conn_param().map(|param| param.responder_resources)
+    }
+
+    /// Get the most RDMA read and atomic operations the local side may have outstanding towards
+    /// the remote peer, as negotiated so far.
+    ///
+    /// On an [`EventType::ConnectRequest`] this is the peer's responder resources, the most the
+    /// initiator depth passed to [`accept`] may be. On an [`EventType::ConnectResponse`] it is the
+    /// responder resources the peer accepted with.
+    ///
+    /// # Returns
+    /// [`None`] for other events and for datagram (UD) identifiers.
+    ///
+    /// [`accept`]: crate::rdmacm::communication_manager::Identifier::accept
+    pub fn initiator_depth(&self) -> Option<u8> {
+        self.conn_param().map(|param| param.initiator_depth)
+    }
+
+    /// The connection parameters of a connection request or response on a connected identifier.
+    fn conn_param(&self) -> Option<&rdma_conn_param> {
+        // SAFETY: the event stays valid until it is acknowledged, which consumes `self`.
+        let event = unsafe { self.event.as_ref() };
+        match self.event_type() {
+            EventType::ConnectRequest | EventType::ConnectResponse => {
+                let id = NonNull::new(event.id)?;
+                // SAFETY: the event's identifier lives at least as long as the event, and on a
+                // connected identifier RDMA CM fills the `conn` member of the union.
+                unsafe {
+                    if id.as_ref().qp_type == ibv_qp_type::IBV_QPT_UD {
+                        None
+                    } else {
+                        Some(&event.param.conn)
+                    }
+                }
+            },
+            _ => None,
+        }
+    }
+
     fn private_data_slice(
         _event: &rdma_cm_event, private_data: *const std::ffi::c_void, private_data_len: u8,
     ) -> &[u8] {
@@ -1735,6 +1787,104 @@ mod tests {
                 assert!(response_private_data[CM_SETUP_PRIVATE_DATA_SIZE..]
                     .iter()
                     .all(|&byte| byte == 0));
+
+                Ok(())
+            },
+            Err(_) => Ok(()),
+        }
+    }
+
+    #[test]
+    fn test_connect_request_and_response_rd_atomic() -> Result<(), Box<dyn std::error::Error>> {
+        match EventChannel::new() {
+            Ok(channel) => {
+                let Some(cm_addr) = first_ib_or_roce_v2_gid_addr() else {
+                    eprintln!("skipping RDMA CM rd_atomic test: no usable IB GID or non-link-local RoCEv2 GID found");
+                    return Ok(());
+                };
+
+                let listener = channel.create_id(PortSpace::Tcp)?;
+                let port = 18516;
+                let server_addr = cm_addr.socket_addr(port);
+                let client_src_addr = cm_addr.socket_addr(0);
+                listener.bind_addr(server_addr)?;
+                listener.listen(1)?;
+
+                // Distinct values on each side, so a swapped field shows.
+                let server = thread::spawn(move || -> Result<(Option<u8>, Option<u8>), String> {
+                    let event = channel.get_cm_event().map_err(|err| err.to_string())?;
+                    assert_eq!(event.event_type(), EventType::ConnectRequest);
+                    let request = (event.responder_resources(), event.initiator_depth());
+                    let conn_id = event
+                        .cm_id()
+                        .ok_or_else(|| "CONNECT_REQUEST did not provide a child CM ID".to_owned())?;
+
+                    let mut qp = create_test_qp(&conn_id)?;
+                    move_test_qp_to_rts(&conn_id, &mut qp)?;
+
+                    let mut accept_param = ConnectionParameter::default();
+                    accept_param
+                        .setup_qp_number(qp.qp_number())
+                        .setup_responder_resources(3)
+                        .setup_initiator_depth(1);
+                    conn_id.accept(accept_param).map_err(|err| err.to_string())?;
+                    event.ack().map_err(|err| err.to_string())?;
+
+                    let established = channel.get_cm_event().map_err(|err| err.to_string())?;
+                    assert_eq!(established.event_type(), EventType::Established);
+                    assert_eq!(established.responder_resources(), None);
+                    established.ack().map_err(|err| err.to_string())?;
+
+                    Ok(request)
+                });
+
+                let client_channel = EventChannel::new()?;
+                let client_id = client_channel.create_id(PortSpace::Tcp)?;
+                client_id.resolve_addr(Some(client_src_addr), server_addr, Duration::from_secs(2))?;
+
+                let mut client_qp = None;
+                let response = loop {
+                    let event = client_channel.get_cm_event()?;
+                    match event.event_type() {
+                        EventType::AddressResolved => {
+                            assert_eq!(event.initiator_depth(), None);
+                            client_id.resolve_route(Duration::from_secs(2))?;
+                            event.ack()?;
+                        },
+                        EventType::RouteResolved => {
+                            let qp = create_test_qp(&client_id).map_err(io::Error::other)?;
+                            let mut connect_param = ConnectionParameter::default();
+                            connect_param
+                                .setup_qp_number(qp.qp_number())
+                                .setup_initiator_depth(4)
+                                .setup_responder_resources(2);
+                            client_id.connect(connect_param)?;
+                            client_qp = Some(qp);
+                            event.ack()?;
+                        },
+                        EventType::ConnectResponse => {
+                            let response = (event.responder_resources(), event.initiator_depth());
+                            let qp = client_qp
+                                .as_mut()
+                                .expect("client QP must exist before CONNECT_RESPONSE");
+                            move_test_qp_to_rts(&client_id, qp).map_err(io::Error::other)?;
+                            client_id.establish()?;
+                            event.ack()?;
+                            break response;
+                        },
+                        event_type => panic!("unexpected client RDMA CM event: {event_type:?}"),
+                    }
+                };
+
+                let request = server
+                    .join()
+                    .map_err(|panic| io::Error::other(format!("server thread panicked: {panic:?}")))?
+                    .map_err(io::Error::other)?;
+
+                // The server sees the client's initiator depth as what it may respond to.
+                assert_eq!(request, (Some(4), Some(2)));
+                // The client sees the server's initiator depth as what it may respond to.
+                assert_eq!(response, (Some(1), Some(3)));
 
                 Ok(())
             },
