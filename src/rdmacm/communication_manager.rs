@@ -166,13 +166,15 @@ use std::{io, mem::MaybeUninit, net::SocketAddr, ptr::NonNull, sync::Arc};
 
 use os_socketaddr::OsSocketAddr;
 use rdma_mummy_sys::{
-    ibv_qp_attr, ibv_qp_type, rdma_accept, rdma_ack_cm_event, rdma_bind_addr, rdma_cm_event, rdma_cm_event_type,
-    rdma_cm_id, rdma_conn_param, rdma_connect, rdma_create_event_channel, rdma_create_id, rdma_destroy_event_channel,
-    rdma_destroy_id, rdma_disconnect, rdma_establish, rdma_event_channel, rdma_get_cm_event, rdma_init_qp_attr,
-    rdma_listen, rdma_migrate_id, rdma_port_space, rdma_resolve_addr, rdma_resolve_route,
+    ibv_mtu, ibv_qp_attr, ibv_qp_type, ibv_sa_path_rec, rdma_accept, rdma_ack_cm_event, rdma_bind_addr, rdma_cm_event,
+    rdma_cm_event_type, rdma_cm_id, rdma_conn_param, rdma_connect, rdma_create_event_channel, rdma_create_id,
+    rdma_destroy_event_channel, rdma_destroy_id, rdma_disconnect, rdma_establish, rdma_event_channel,
+    rdma_get_cm_event, rdma_init_qp_attr, rdma_listen, rdma_migrate_id, rdma_port_space, rdma_resolve_addr,
+    rdma_resolve_route,
 };
 
-use crate::ibverbs::device_context::DeviceContext;
+use crate::ibverbs::address::Gid;
+use crate::ibverbs::device_context::{DeviceContext, Mtu};
 use crate::ibverbs::queue_pair::{QueuePairAttribute, QueuePairState};
 
 /// The type of communication [`Event`] which occurred.
@@ -247,6 +249,98 @@ pub struct Identifier {
     event_channel: Mutex<Arc<EventChannel>>,
     cm_id: NonNull<rdma_cm_id>,
     user_context: Mutex<Option<Arc<dyn Any + Send + Sync>>>,
+}
+
+/// A path record of a route resolved by [`Identifier::resolve_route`], see
+/// [`Identifier::path_records`].
+///
+/// On RoCE, RDMA CM fills it from the host settings of the source address, e.g. the `cma_roce_tos`
+/// of the port and the VLAN egress map or DCB of the interface, so it tells the service level and
+/// traffic class connections from that address should use.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PathRecord {
+    source_gid: Gid,
+    dest_gid: Gid,
+    source_lid: u16,
+    dest_lid: u16,
+    service_level: u8,
+    traffic_class: u8,
+    hop_limit: u8,
+    flow_label: u32,
+    pkey: u16,
+    mtu: Option<Mtu>,
+}
+
+impl From<&ibv_sa_path_rec> for PathRecord {
+    fn from(rec: &ibv_sa_path_rec) -> Self {
+        let mtu = u32::from(rec.mtu);
+        PathRecord {
+            source_gid: rec.sgid.into(),
+            dest_gid: rec.dgid.into(),
+            source_lid: u16::from_be(rec.slid),
+            dest_lid: u16::from_be(rec.dlid),
+            service_level: rec.sl,
+            traffic_class: rec.traffic_class,
+            hop_limit: rec.hop_limit,
+            flow_label: u32::from_be(rec.flow_label),
+            pkey: u16::from_be(rec.pkey),
+            mtu: (ibv_mtu::IBV_MTU_256..=ibv_mtu::IBV_MTU_4096)
+                .contains(&mtu)
+                .then(|| Mtu::from(mtu)),
+        }
+    }
+}
+
+impl PathRecord {
+    /// Returns the GID of the source port.
+    pub fn source_gid(&self) -> Gid {
+        self.source_gid
+    }
+
+    /// Returns the GID of the destination port.
+    pub fn dest_gid(&self) -> Gid {
+        self.dest_gid
+    }
+
+    /// Returns the LID of the source port, only meaningful on InfiniBand.
+    pub fn source_lid(&self) -> u16 {
+        self.source_lid
+    }
+
+    /// Returns the LID of the destination port, only meaningful on InfiniBand.
+    pub fn dest_lid(&self) -> u16 {
+        self.dest_lid
+    }
+
+    /// Returns the service level, 4 bits only.
+    pub fn service_level(&self) -> u8 {
+        self.service_level
+    }
+
+    /// Returns the traffic class of the GRH, which RoCE maps to the IP ToS byte.
+    pub fn traffic_class(&self) -> u8 {
+        self.traffic_class
+    }
+
+    /// Returns the hop limit of the GRH.
+    pub fn hop_limit(&self) -> u8 {
+        self.hop_limit
+    }
+
+    /// Returns the flow label of the GRH, 20 bits only.
+    pub fn flow_label(&self) -> u32 {
+        self.flow_label
+    }
+
+    /// Returns the partition key.
+    pub fn pkey(&self) -> u16 {
+        self.pkey
+    }
+
+    /// Returns the path MTU, `None` when the record carries no valid one.
+    pub fn mtu(&self) -> Option<Mtu> {
+        self.mtu
+    }
 }
 
 /// A connection paramter used for configure the communication when connecting or establishing
@@ -820,6 +914,23 @@ impl Identifier {
         let cm_id = self.cm_id;
 
         unsafe { cm_id.as_ref().port_num }
+    }
+
+    /// Get the path records of the route resolved by [`resolve_route`], empty before
+    /// [`EventType::RouteResolved`] is received.
+    ///
+    /// [`resolve_route`]: crate::rdmacm::communication_manager::Identifier::resolve_route
+    ///
+    pub fn path_records(&self) -> Vec<PathRecord> {
+        let route = unsafe { &self.cm_id.as_ref().route };
+        let num_paths = usize::try_from(route.num_paths).unwrap_or(0);
+        if route.path_rec.is_null() || num_paths == 0 {
+            return Vec::new();
+        }
+        unsafe { std::slice::from_raw_parts(route.path_rec, num_paths) }
+            .iter()
+            .map(PathRecord::from)
+            .collect()
     }
 
     /// Bind the [`Identifier`] to a specific address. Note that users shouldn't bind to a loopback
@@ -1799,5 +1910,49 @@ mod tests {
             },
             Err(_) => Ok(()),
         }
+    }
+
+    /// The first IPv4 address any RDMA device carries in its GID table.
+    fn first_rdma_ipv4() -> Option<std::net::Ipv4Addr> {
+        let list = device::DeviceList::new().ok()?;
+        list.iter().filter_map(|dev| dev.open().ok()).find_map(|ctx| {
+            ctx.query_gid_table()
+                .ok()?
+                .iter()
+                .find_map(|e| Ipv6Addr::from(e.gid().raw).to_ipv4_mapped())
+        })
+    }
+
+    #[test]
+    fn test_path_records_of_resolved_route() -> Result<(), Box<dyn std::error::Error>> {
+        let Ok(channel) = EventChannel::new() else {
+            return Ok(());
+        };
+        let Some(addr) = first_rdma_ipv4() else {
+            return Ok(());
+        };
+        let id = channel.create_id(PortSpace::Tcp)?;
+        assert!(id.path_records().is_empty());
+
+        // a route to the address itself, as used to learn its QoS
+        id.resolve_addr(None, SocketAddr::from((addr, 0)), Duration::from_secs(2))?;
+        let event = wait_for_cm_event(&channel, Duration::from_secs(3), "address resolution")?;
+        assert_eq!(event.event_type(), EventType::AddressResolved);
+        event.ack()?;
+        assert!(id.path_records().is_empty());
+
+        id.resolve_route(Duration::from_secs(2))?;
+        let event = wait_for_cm_event(&channel, Duration::from_secs(3), "route resolution")?;
+        assert_eq!(event.event_type(), EventType::RouteResolved);
+        event.ack()?;
+
+        let records = id.path_records();
+        assert!(!records.is_empty());
+        println!("{records:?}");
+        let expected = Gid::from(addr.to_ipv6_mapped());
+        assert_eq!(records[0].source_gid(), expected);
+        assert_eq!(records[0].dest_gid(), expected);
+        assert!(records[0].mtu().is_some());
+        Ok(())
     }
 }
