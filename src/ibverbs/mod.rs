@@ -5,6 +5,7 @@ pub mod device_context;
 pub mod memory_region;
 pub mod protection_domain;
 pub mod queue_pair;
+pub mod shared_receive_queue;
 
 use bitmask_enum::bitmask;
 use rdma_mummy_sys::ibv_access_flags;

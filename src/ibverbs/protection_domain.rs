@@ -12,6 +12,7 @@ use super::{
     device_context::DeviceContext,
     memory_region::{MemoryRegion, RegisterMemoryRegionError},
     queue_pair::QueuePairBuilder,
+    shared_receive_queue::SharedReceiveQueueBuilder,
     AccessFlags,
 };
 
@@ -102,6 +103,12 @@ impl ProtectionDomain {
     /// later.
     pub fn create_qp_builder(self: &Arc<Self>) -> QueuePairBuilder {
         QueuePairBuilder::new(self)
+    }
+
+    /// Create a [`SharedReceiveQueueBuilder`] for building SRQs on this protection domain
+    /// later.
+    pub fn create_srq_builder(self: &Arc<Self>) -> SharedReceiveQueueBuilder {
+        SharedReceiveQueueBuilder::new(self)
     }
 
     /// # Safety
