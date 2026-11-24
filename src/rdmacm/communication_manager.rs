@@ -169,8 +169,13 @@ use rdma_mummy_sys::{
     ibv_qp_attr, ibv_qp_type, rdma_accept, rdma_ack_cm_event, rdma_bind_addr, rdma_cm_event, rdma_cm_event_type,
     rdma_cm_id, rdma_conn_param, rdma_connect, rdma_create_event_channel, rdma_create_id, rdma_destroy_event_channel,
     rdma_destroy_id, rdma_disconnect, rdma_establish, rdma_event_channel, rdma_get_cm_event, rdma_init_qp_attr,
-    rdma_listen, rdma_migrate_id, rdma_port_space, rdma_resolve_addr, rdma_resolve_route,
+    rdma_listen, rdma_migrate_id, rdma_port_space, rdma_resolve_addr, rdma_resolve_route, rdma_set_option,
 };
+
+/// `RDMA_OPTION_ID` level of `rdma_set_option(3)`.
+const RDMA_OPTION_ID: i32 = 0;
+/// `RDMA_OPTION_ID_TOS` option of `rdma_set_option(3)`, a `uint8_t`.
+const RDMA_OPTION_ID_TOS: i32 = 0;
 
 use crate::ibverbs::device_context::DeviceContext;
 use crate::ibverbs::queue_pair::{QueuePairAttribute, QueuePairState};
@@ -399,6 +404,20 @@ pub struct ListenError(#[from] pub ListenErrorKind);
 #[error(transparent)]
 #[non_exhaustive]
 pub enum ListenErrorKind {
+    Rdmacm(#[from] io::Error),
+}
+
+/// Error returned by [`Identifier::set_type_of_service`].
+#[derive(Debug, thiserror::Error)]
+#[error("failed to set type of service")]
+#[non_exhaustive]
+pub struct SetTypeOfServiceError(#[from] pub SetTypeOfServiceErrorKind);
+
+/// The enum type for [`SetTypeOfServiceError`].
+#[derive(Debug, thiserror::Error)]
+#[error(transparent)]
+#[non_exhaustive]
+pub enum SetTypeOfServiceErrorKind {
     Rdmacm(#[from] io::Error),
 }
 
@@ -822,6 +841,32 @@ impl Identifier {
         unsafe { cm_id.as_ref().port_num }
     }
 
+    /// Set the type of service byte (RFC 2474: DSCP and ECN) of the [`Identifier`]'s traffic,
+    /// overriding the host default (e.g. `cma_roce_tos` on RoCE). Call it before [`resolve_route`]
+    /// or [`listen`]; on RoCE it becomes the traffic class of the resolved route.
+    ///
+    /// [`resolve_route`]: crate::rdmacm::communication_manager::Identifier::resolve_route
+    /// [`listen`]: crate::rdmacm::communication_manager::Identifier::listen
+    ///
+    pub fn set_type_of_service(&self, tos: u8) -> Result<(), SetTypeOfServiceError> {
+        let mut tos = tos;
+        let ret = unsafe {
+            rdma_set_option(
+                self.cm_id.as_ptr(),
+                RDMA_OPTION_ID,
+                RDMA_OPTION_ID_TOS,
+                (&raw mut tos).cast(),
+                size_of::<u8>(),
+            )
+        };
+
+        if ret < 0 {
+            return Err(SetTypeOfServiceErrorKind::Rdmacm(io::Error::last_os_error()).into());
+        }
+
+        Ok(())
+    }
+
     /// Bind the [`Identifier`] to a specific address. Note that users shouldn't bind to a loopback
     /// address like `127.0.0.1`, or the connection would fail.
     ///
@@ -1237,6 +1282,7 @@ mod tests {
     use crate::ibverbs::address::{GidEntry, GidType};
     use crate::ibverbs::completion::GenericCompletionQueue;
     use crate::ibverbs::device;
+    use crate::ibverbs::device_context::LinkLayer;
     use crate::ibverbs::queue_pair::{ExtendedQueuePair, QueuePair};
     use polling::{Event as PollingEvent, Events, Poller};
     use std::net::{IpAddr, Ipv6Addr, SocketAddr};
@@ -1799,5 +1845,39 @@ mod tests {
             },
             Err(_) => Ok(()),
         }
+    }
+
+    #[test]
+    fn test_type_of_service_sets_route_traffic_class() -> Result<(), Box<dyn std::error::Error>> {
+        let Ok(channel) = EventChannel::new() else {
+            return Ok(());
+        };
+        let Some(addr) = first_ib_or_roce_v2_gid_addr() else {
+            return Ok(());
+        };
+        let id = channel.create_id(PortSpace::Tcp)?;
+        // DSCP 26 with ECT(0)
+        id.set_type_of_service(106)?;
+
+        // a route to the address itself
+        id.resolve_addr(None, addr.socket_addr(0), Duration::from_secs(2))?;
+        let event = wait_for_cm_event(&channel, Duration::from_secs(3), "address resolution")?;
+        assert_eq!(event.event_type(), EventType::AddressResolved);
+        event.ack()?;
+        id.resolve_route(Duration::from_secs(2))?;
+        let event = wait_for_cm_event(&channel, Duration::from_secs(3), "route resolution")?;
+        assert_eq!(event.event_type(), EventType::RouteResolved);
+        event.ack()?;
+
+        // InfiniBand takes the traffic class from the SA, not the ToS
+        let ctx = id.get_device_context().expect("resolved route has a device");
+        if ctx.query_port(id.port())?.link_layer() != LinkLayer::Ethernet {
+            return Ok(());
+        }
+        let route = unsafe { &id.cm_id.as_ref().route };
+        assert!(route.num_paths > 0);
+        assert!(!route.path_rec.is_null());
+        assert_eq!(unsafe { (*route.path_rec).traffic_class }, 106);
+        Ok(())
     }
 }
